@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.3.0)
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            ext: ""
+          - os: windows
+            arch: amd64
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.22'
+          cache: true
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm install -g pnpm
+          pnpm install
+          pnpm build
+
+      - name: Build binary
+        run: |
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o skill-web-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-web-${{ matrix.os }}-${{ matrix.arch }}
+          path: skill-web-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate checksums
+        run: |
+          cd skill-web-linux-amd64 && sha256sum skill-web-linux-amd64 > ../skill-web-linux-amd64.sha256
+          cd ../skill-web-windows-amd64 && sha256sum skill-web-windows-amd64.exe > ../skill-web-windows-amd64.sha256
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          body: |
+            ## skill-web ${{ github.event.inputs.tag }}
+
+            下载对应平台的二进制，解压后直接运行。
+          files: |
+            skill-web-linux-amd64/skill-web-linux-amd64
+            skill-web-linux-amd64.sha256
+            skill-web-windows-amd64/skill-web-windows-amd64.exe
+            skill-web-windows-amd64.sha256

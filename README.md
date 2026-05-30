@@ -14,20 +14,37 @@
 
 ---
 
+<div align="center">
+
+[![Release](https://img.shields.io/github/v/release/Aubyn/skill-web?style=flat-square)](https://github.com/Aubyn/skill-web/releases)
+
+</div>
+
 ## 快速开始
 
 ```bash
-# 下载最新 release 或自行构建
-wget https://github.com/.../skill-web
+# 下载最新 release
+# https://github.com/Aubyn/skill-web/releases
+# Linux:  skill-web-linux-amd64
+# Windows: skill-web-windows-amd64.exe
 
 # 启动（默认 127.0.0.1:7931）
-./skill-web
+./skill-web-linux-amd64
 
 # 打开浏览器
 open http://127.0.0.1:7931
 ```
 
-> 端口被占用时会自动尝试 7932 → 7933 → … → 7940，启动后第一行日志打印实际地址。
+> 端口被占用时自动尝试 7932 → 7933 → … → 7940，启动后第一行日志打印实际地址。
+
+### 从源码构建
+
+```bash
+git clone https://github.com/Aubyn/skill-web.git
+cd skill-web
+cd frontend && pnpm install && pnpm build && cd ..
+go build -o skill-web .
+```
 
 ---
 
@@ -67,7 +84,16 @@ open http://127.0.0.1:7931
 导入技能 → 建组管理 → 添加目标目录 → 执行同步 → 检查目标目录
 ```
 
-![使用流程图](https://via.placeholder.com/800x200?text=skill-web+workflow)
+```mermaid
+flowchart LR
+    A[导入技能] --> B[技能库]
+    B --> C[建组管理]
+    C --> D[添加目标目录]
+    D --> E[执行同步]
+    E --> F[检查目标目录]
+    F -.->|增删技能| B
+    F -.->|更换来源| D
+```
 
 ---
 
