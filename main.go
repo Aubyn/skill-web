@@ -32,6 +32,9 @@ func main() {
 	storeDir := filepath.Join(home, ".skill-web", "skills")
 	os.MkdirAll(storeDir, 0755)
 
+	// Seed default targets on first run
+	seedDefaultTargets(database)
+
 	// Echo server
 	e := echo.New()
 	e.HideBanner = true
@@ -128,5 +131,27 @@ func main() {
 	e.Server.Handler = e
 	if err := e.Server.Serve(listener); err != nil {
 		e.Logger.Fatal(err)
+	}
+}
+
+func seedDefaultTargets(database *db.DB) {
+	targets, err := database.ListTargets()
+	if err != nil {
+		return
+	}
+	if len(targets) > 0 {
+		return
+	}
+
+	defaults := []struct {
+		path  string
+		label string
+	}{
+		{"~/.claude/skills", "Claude"},
+		{"~/.reasonix/skills", "Reasonix"},
+		{"~/.agents/skills", "通用 Agent"},
+	}
+	for _, d := range defaults {
+		database.CreateTarget(d.path, d.label)
 	}
 }
