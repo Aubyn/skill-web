@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (e.g. v0.3.0)
+        description: Release tag (e.g. v1.0.0)
         required: true
         type: string
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -67,10 +70,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
           body: |
-            ## skill-web ${{ github.event.inputs.tag }}
+            ## skill-web ${{ github.event.inputs.tag || github.ref_name }}
 
             下载对应平台的二进制，解压后直接运行。
           files: |
