@@ -81,10 +81,10 @@ export const api = {
   scanPreview: (dir: string) =>
     request<ScanResult>(`/api/scan-preview?dir=${encodeURIComponent(dir)}`),
 
-  importSkills: (dir: string) =>
+  importSkills: (dir: string, skillIds?: string[]) =>
     request<ImportResult>('/api/import', {
       method: 'POST',
-      body: JSON.stringify({ dir }),
+      body: JSON.stringify({ dir, skill_ids: skillIds }),
     }),
 
   // Groups

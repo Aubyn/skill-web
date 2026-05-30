@@ -48,6 +48,7 @@ export default function Dashboard() {
   const [showImport, setShowImport] = useState(false)
   const [importDir, setImportDir] = useState('')
   const [importPreview, setImportPreview] = useState<ScanResult | null>(null)
+  const [selectedImportSkills, setSelectedImportSkills] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
 
   const [showCreateGroup, setShowCreateGroup] = useState(false)
@@ -242,6 +243,7 @@ export default function Dashboard() {
     try {
       const result = await api.scanPreview(importDir)
       setImportPreview(result)
+      setSelectedImportSkills(new Set(result.found.map(s => s.id)))
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '扫描失败'
       alert(msg)
@@ -252,10 +254,12 @@ export default function Dashboard() {
     if (!importPreview) return
     setImporting(true)
     try {
-      await api.importSkills(importDir)
+      const skillIds = [...selectedImportSkills]
+      await api.importSkills(importDir, skillIds.length < importPreview.total ? skillIds : undefined)
       setShowImport(false)
       setImportDir('')
       setImportPreview(null)
+      setSelectedImportSkills(new Set())
       loadData()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '导入失败'
@@ -385,7 +389,7 @@ export default function Dashboard() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle pointer-events-none" />
                 <input
                   className="input-field pl-9 text-sm"
-                  placeholder="搜索技能…"
+                  placeholder="按名称或来源路径筛选"
                   value={query}
                   onChange={e => handleSearch(e.target.value)}
                 />
@@ -692,7 +696,7 @@ export default function Dashboard() {
 
 <label className="text-sm font-medium text-fg-muted mb-1.5 block">目录路径</label>
             <div className="flex gap-2 mb-4">
-              <input className="input-field flex-1" placeholder="/home/user/我的技能目录"
+              <input className="input-field flex-1" placeholder="/home/user/skills 或 /path/to/skills.zip"
                 value={importDir} onChange={e => { setImportDir(e.target.value); setImportPreview(null) }}
                 onKeyDown={e => e.key === 'Enter' && handleScan()} />
               <button className="btn-outline" onClick={handleScan}><FolderOpen className="w-4 h-4" /> 扫描</button>
@@ -703,13 +707,39 @@ export default function Dashboard() {
               <div className="mb-4 px-4 py-3 rounded-xl bg-accent-bg/30 border border-accent/20">
                 <p className="text-sm font-medium text-fg-base mb-2">
                   ✓ 扫描完成 — 发现 {importPreview.total} 个技能
+                  <span className="text-fg-muted ml-2 font-normal">已选 {selectedImportSkills.size} 个</span>
                   {(importPreview.conflicts_with_existing || []).length > 0 && (
                     <span className="text-accent ml-2">（{(importPreview.conflicts_with_existing || []).length} 个已存在，将覆盖）</span>
                   )}
                 </p>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <button className="text-xs text-fg-muted hover:text-fg-base transition-colors"
+                    onClick={() => {
+                      if (selectedImportSkills.size === importPreview.total) {
+                        setSelectedImportSkills(new Set())
+                      } else {
+                        setSelectedImportSkills(new Set(importPreview.found.map(s => s.id)))
+                      }
+                    }}>
+                    {selectedImportSkills.size === importPreview.total ? '取消全选' : '全选'}
+                  </button>
+                </div>
                 <div className="max-h-40 overflow-y-auto space-y-0.5">
                   {importPreview.found.map(s => (
-                    <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded text-sm hover:bg-bg-card">
+                    <div key={s.id}
+                      onClick={() => setSelectedImportSkills(prev => {
+                        const next = new Set(prev)
+                        if (next.has(s.id)) next.delete(s.id); else next.add(s.id)
+                        return next
+                      })}
+                      className={`flex items-center gap-2 px-2 py-1 rounded text-sm cursor-pointer transition-colors
+                        ${selectedImportSkills.has(s.id) ? 'bg-accent-bg/40' : 'hover:bg-bg-card'}`}
+                    >
+                      <div className={`w-3.5 h-3.5 rounded-[3px] flex items-center justify-center shrink-0 transition-all
+                        ${selectedImportSkills.has(s.id) ? 'bg-accent text-white' : 'border border-border bg-white'}`}
+                      >
+                        {selectedImportSkills.has(s.id) && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                      </div>
                       <FileCode className="w-3.5 h-3.5 text-fg-subtle shrink-0" />
                       <span>{s.id}</span>
                       <span className="text-xs text-fg-muted ml-auto">{s.size}</span>
@@ -729,11 +759,11 @@ export default function Dashboard() {
             {/* Actions */}
             <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
               <button className="btn-ghost" onClick={() => { setShowImport(false); setImportPreview(null); setImportDir('') }}>取消</button>
-              <button className="btn-primary" disabled={!importPreview || importing} onClick={handleImport}>
+              <button className="btn-primary" disabled={!importPreview || importing || selectedImportSkills.size === 0} onClick={handleImport}>
                 {importing ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> 导入中…</>
                 ) : importPreview ? (
-                  <>确认导入 {importPreview.total} 个技能</>
+                  <>确认导入 {selectedImportSkills.size} 个技能</>
                 ) : (
                   <>请先扫描</>
                 )}
@@ -767,7 +797,7 @@ export default function Dashboard() {
             <h2 className="text-base font-semibold mb-4">追加技能到组</h2>
             <div className="relative mb-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle" />
-              <input className="input-field pl-9 text-sm" placeholder="搜索技能…"
+              <input className="input-field pl-9 text-sm" placeholder="按名称或来源路径筛选"
                 value={addSkillSearch} onChange={e => searchAddSkills(e.target.value)} />
             </div>
             <ScrollArea className="max-h-64 mb-4 space-y-0.5">
@@ -869,7 +899,7 @@ export default function Dashboard() {
         <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-bg-card rounded-xl p-6 w-full max-w-md mx-4 shadow-dialog border border-border/60">
             <h2 className="text-base font-semibold mb-4">添加目标目录</h2>
-            <label className="text-sm font-medium text-fg-muted mb-1.5 block">目录路径</label>
+            <label className="text-sm font-medium text-fg-muted mb-1.5 block">目录或压缩包路径</label>
             <input className="input-field mb-3" value={newTargetPath} onChange={e => setNewTargetPath(e.target.value)} placeholder="/home/user/.claude/skills" />
             <label className="text-sm font-medium text-fg-muted mb-1.5 block">标签（可选）</label>
             <input className="input-field mb-4" value={newTargetLabel} onChange={e => setNewTargetLabel(e.target.value)} placeholder="Claude 技能目录" />

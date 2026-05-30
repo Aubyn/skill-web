@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart">快速开始</a> ·
-  <a href="#features">功能</a> ·
-  <a href="#usage">使用</a> ·
-  <a href="#develop">开发</a> ·
-  <a href="#tech">技术栈</a>
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#使用流程">使用</a> ·
+  <a href="#开发">开发</a> ·
+  <a href="#技术栈">技术栈</a>
 </p>
 
 ---

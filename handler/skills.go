@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"archive/zip"
 	"bufio"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -121,6 +124,15 @@ func (h *SkillHandler) ScanPreview(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "dir parameter required"})
 	}
 
+	// Handle zip: extract to temp dir
+	scanDir, cleanup, err := resolveScanDir(dir)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
 	// Get existing skill IDs
 	existing := map[string]bool{}
 	skills, _, _ := h.DB.ListSkills("", 1, 10000)
@@ -128,7 +140,7 @@ func (h *SkillHandler) ScanPreview(c echo.Context) error {
 		existing[s.ID] = true
 	}
 
-	entries, conflicts, err := scanner.Scan(dir, existing, 20)
+	entries, conflicts, err := scanner.Scan(scanDir, existing, 20)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
@@ -169,6 +181,20 @@ func extractDescription(storeDir, id string) string {
 			if strings.HasPrefix(line, "description:") || strings.HasPrefix(line, "description :") {
 				val := strings.TrimSpace(line[strings.Index(line, ":")+1:])
 				val = strings.Trim(val, ` "'`)
+
+				// Handle YAML block scalar: description: >  or description: |
+				if val == "" || val == ">" || val == "|" || val == ">-" || val == "|-" || val == ">+" || val == "|+" {
+					var parts []string
+					for scanner.Scan() {
+						cont := scanner.Text()
+						if cont == "" || (cont[0] != ' ' && cont[0] != '\t') {
+							break
+						}
+						parts = append(parts, strings.TrimSpace(cont))
+					}
+					val = strings.Join(parts, " ")
+				}
+
 				if val != "" {
 					return val
 				}
@@ -181,13 +207,23 @@ func extractDescription(storeDir, id string) string {
 // POST /api/import
 func (h *SkillHandler) Import(c echo.Context) error {
 	var req struct {
-		Dir string `json:"dir"`
+		Dir      string   `json:"dir"`
+		SkillIDs []string `json:"skill_ids"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 	if req.Dir == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "dir required"})
+	}
+
+	// Handle zip: extract to temp dir
+	scanDir, cleanup, err := resolveScanDir(req.Dir)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Get existing skill IDs
@@ -197,9 +233,24 @@ func (h *SkillHandler) Import(c echo.Context) error {
 		existing[s.ID] = true
 	}
 
-	entries, _, err := scanner.Scan(req.Dir, existing, 20)
+	entries, _, err := scanner.Scan(scanDir, existing, 20)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Filter by skill_ids if provided
+	if len(req.SkillIDs) > 0 {
+		want := map[string]bool{}
+		for _, id := range req.SkillIDs {
+			want[id] = true
+		}
+		var filtered []scanner.Entry
+		for _, e := range entries {
+			if want[e.ID] {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
 	}
 
 	var imported []map[string]string
@@ -251,6 +302,68 @@ func (h *SkillHandler) Import(c echo.Context) error {
 		"conflicts": conflicts,
 		"total":     len(imported),
 	})
+}
+
+// resolveScanDir returns the directory to scan. If path is a .zip file,
+// it extracts to a temp dir and returns a cleanup function.
+func resolveScanDir(path string) (scanDir string, cleanup func(), err error) {
+	if !strings.HasSuffix(strings.ToLower(path), ".zip") {
+		return path, nil, nil
+	}
+
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "skill-web-zip-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot create temp dir: %w", err)
+	}
+
+	if err := extractZip(path, tmpDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", nil, fmt.Errorf("cannot extract zip: %w", err)
+	}
+
+	return tmpDir, func() { os.RemoveAll(tmpDir) }, nil
+}
+
+func extractZip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		// Zip slip protection
+		target := filepath.Join(dest, f.Name)
+		if !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(target, 0755)
+			continue
+		}
+
+		os.MkdirAll(filepath.Dir(target), 0755)
+
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			rc.Close()
+			return err
+		}
+
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyDir(src, dst string) error {

@@ -52,8 +52,8 @@ func (d *DB) ListSkills(q string, page, pageSize int) ([]Skill, int, error) {
 	where := ""
 	args := []any{}
 	if q != "" {
-		where = "WHERE id LIKE ?"
-		args = append(args, "%"+q+"%")
+		where = "WHERE id LIKE ? OR source_path LIKE ?"
+		args = append(args, "%"+q+"%", "%"+q+"%")
 	}
 
 	var total int
