@@ -1,0 +1,22 @@
+# Go binary
+skill-web
+skill-web.exe
+
+# Frontend build output
+frontend/dist/
+
+# Node.js
+frontend/node_modules/
+
+# SQLite database
+skill-web.db
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Handoff docs (not part of project source)
+docs/handoff/

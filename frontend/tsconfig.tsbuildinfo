@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/api/client.ts","./src/components/AppShell.tsx","./src/components/Sidebar.tsx","./src/lib/utils.ts","./src/pages/SkillGroups.tsx","./src/pages/SkillLibrary.tsx","./src/pages/SyncPage.tsx","./src/pages/TargetsPage.tsx"],"version":"5.7.3"}
