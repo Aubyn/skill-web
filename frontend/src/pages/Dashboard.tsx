@@ -417,6 +417,19 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 px-1 py-1 mb-1">
+                    <button className="text-xs text-fg-muted hover:text-fg-base transition-colors"
+                      onClick={() => {
+                        if (selectedSkills.size === filteredSkills.length) {
+                          setSelectedSkills(new Set())
+                        } else {
+                          setSelectedSkills(new Set(filteredSkills.map(s => s.id)))
+                        }
+                      }}>
+                      {selectedSkills.size === filteredSkills.length ? '取消全选' : '全选'}
+                    </button>
+                    <span className="text-xs text-fg-subtle">{selectedSkills.size} 个已选</span>
+                  </div>
                   {filteredSkills.map(s => (
                     <div
                       key={s.id}
