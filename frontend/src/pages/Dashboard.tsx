@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Search, Plus, FolderOpen, Trash2, FileCode, Layers, ChevronRight,
   ChevronDown, Settings2, FolderOpen as FolderIcon, Loader2,
-  ArrowRightToLine
+  ArrowRightToLine, Eye
 } from 'lucide-react'
 import { api, type Skill, type SkillGroup, type TargetDir, type ScanResult } from '../api/client'
 import { ScrollArea } from '../components/ScrollArea'
@@ -186,6 +186,14 @@ export default function Dashboard() {
       groupIds = [expandedGroup]
     }
 
+    // Check if target directories exist
+    const existCheck = await api.checkTargetsExist(targetIds)
+    const missing = existCheck.results.filter(r => !r.exists)
+    if (missing.length > 0) {
+      const paths = missing.map(r => r.path).join('\n')
+      if (!confirm(`以下目标目录不存在，是否自动创建？\n\n${paths}`)) return
+    }
+
     if (!confirm('同步将覆盖目标目录中的原有内容，确定继续？')) return
 
     setSyncing(true)
@@ -204,6 +212,18 @@ export default function Dashboard() {
       toast({ type: 'error', title: '同步失败', message: msg })
     }
     setSyncing(false)
+  }
+
+  // ── Skill Detail ──
+  const [skillDetail, setSkillDetail] = useState<{ skill: Skill; files: string[] } | null>(null)
+
+  const loadSkillDetail = async (id: string) => {
+    try {
+      const data = await api.getSkill(id)
+      setSkillDetail(data)
+    } catch {
+      toast({ type: 'error', title: '加载技能详情失败' })
+    }
   }
 
   // ── Import ──
@@ -394,6 +414,13 @@ export default function Dashboard() {
                           <div className="text-xs text-fg-muted truncate" title={s.description}>{s.description}</div>
                         )}
                       </div>
+                      <button
+                        onClick={e => { e.stopPropagation(); loadSkillDetail(s.id) }}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-bg-base text-fg-muted hover:text-fg-base transition-opacity"
+                        title="查看详情"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         onClick={e => { e.stopPropagation(); handleDeleteSkill(s.id) }}
                         className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-bg-base text-fg-muted hover:text-accent transition-opacity"
@@ -757,6 +784,67 @@ export default function Dashboard() {
             <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
               <button className="btn-ghost" onClick={() => { setShowAddTarget(false); setNewTargetPath(''); setNewTargetLabel('') }}>取消</button>
               <button className="btn-primary" onClick={handleAddTarget}>添加</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Detail Dialog */}
+      {skillDetail && (
+        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSkillDetail(null)}>
+          <div className="bg-bg-card rounded-xl p-6 w-full max-w-lg mx-4 shadow-dialog border border-border/60" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <FileCode className="w-4 h-4 text-accent" />
+                {skillDetail.skill.id}
+              </h2>
+              <button onClick={() => setSkillDetail(null)} className="p-1 rounded hover:bg-sidebar-hover text-fg-muted hover:text-fg-base transition-colors">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            {/* Metadata */}
+            <div className="space-y-2 mb-4 text-sm">
+              <div className="flex justify-between">
+                <span className="text-fg-muted">类型</span>
+                <span className="font-medium">{skillDetail.skill.skill_type}</span>
+              </div>
+              {skillDetail.skill.description && (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-fg-muted">描述</span>
+                  <span className="text-sm">{skillDetail.skill.description}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-fg-muted">来源路径</span>
+                <span className="text-xs font-mono text-right max-w-[70%] truncate" title={skillDetail.skill.source_path}>{skillDetail.skill.source_path}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-fg-muted">存储路径</span>
+                <span className="text-xs font-mono text-right max-w-[70%] truncate" title={skillDetail.skill.store_path}>{skillDetail.skill.store_path}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-fg-muted">导入时间</span>
+                <span className="text-xs">{skillDetail.skill.created_at}</span>
+              </div>
+            </div>
+
+            {/* Files */}
+            <div>
+              <p className="text-sm font-medium text-fg-muted mb-2">文件结构</p>
+              {skillDetail.files.length === 0 ? (
+                <p className="text-xs text-fg-subtle">（空目录）</p>
+              ) : (
+                <div className="bg-bg-base rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">
+                  {skillDetail.files.map(f => (
+                    <div key={f} className="text-xs font-mono text-fg-muted px-1 py-0.5 hover:text-fg-base">{f}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 mt-4 border-t border-border/60">
+              <button className="btn-ghost text-sm" onClick={() => setSkillDetail(null)}>关闭</button>
             </div>
           </div>
         </div>

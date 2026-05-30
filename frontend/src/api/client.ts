@@ -131,6 +131,11 @@ export const api = {
   clearTarget: (id: number) =>
     request<{ removed: string[]; failed: string[]; total: number; backup_path: string }>(`/api/targets/${id}/clear`, { method: 'POST' }),
 
+  checkTargetsExist: (ids: number[]) =>
+    request<{ results: Array<{ id: number; exists: boolean; path: string; error?: string }> }>(
+      `/api/targets/exists-check?ids=${ids.join(',')}`
+    ),
+
   deleteTarget: (id: number) =>
     request<{ success: boolean }>(`/api/targets/${id}`, { method: 'DELETE' }),
 

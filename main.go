@@ -74,6 +74,7 @@ func main() {
 		api.DELETE("/targets/:id", th.Delete)
 		api.GET("/targets/:id/skills", th.ListSkills)
 		api.POST("/targets/:id/clear", th.Clear)
+		api.GET("/targets/exists-check", th.ExistsCheck)
 
 		// Sync
 		api.POST("/sync", syh.Sync)

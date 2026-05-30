@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +145,47 @@ func (h *TargetHandler) Clear(c echo.Context) error {
 		"total":       len(removed),
 		"backup_path": backupDir,
 	})
+}
+
+// GET /api/targets/exists-check — check if target directories exist on disk
+func (h *TargetHandler) ExistsCheck(c echo.Context) error {
+	idsParam := c.QueryParam("ids")
+	if idsParam == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "ids param required"})
+	}
+
+	parts := strings.Split(idsParam, ",")
+	type Result struct {
+		ID     int    `json:"id"`
+		Exists bool   `json:"exists"`
+		Path   string `json:"path"`
+		Error  string `json:"error,omitempty"`
+	}
+	results := []Result{}
+
+	for _, p := range parts {
+		id, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			continue
+		}
+		target, err := h.DB.GetTarget(id)
+		if err != nil {
+			results = append(results, Result{ID: id, Exists: false, Error: "db lookup failed"})
+			continue
+		}
+		if target == nil {
+			results = append(results, Result{ID: id, Exists: false, Error: "not found"})
+			continue
+		}
+		_, err = os.Stat(resolvePath(target.Path))
+		results = append(results, Result{
+			ID:     id,
+			Exists: err == nil,
+			Path:   target.Path,
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"results": results})
 }
 
 // copySymlink copies a symlink by re-creating it at the destination,
