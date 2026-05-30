@@ -30,6 +30,16 @@ export default function Dashboard() {
   const [selectedTargets, setSelectedTargets] = useState<Set<number>>(new Set())
   const [expandedTarget, setExpandedTarget] = useState<number | null>(null)
 
+  // ── Welcome ──
+  const [showWelcome, setShowWelcome] = useState<'first' | 'reopen' | null>(() =>
+    localStorage.getItem('skill-web-welcome-dismissed') ? null : 'first'
+  )
+
+  const dismissWelcome = () => {
+    localStorage.setItem('skill-web-welcome-dismissed', '1')
+    setShowWelcome(null)
+  }
+
   // ── Sync ──
   const [syncing, setSyncing] = useState(false)
   const { toast } = useToast()
@@ -314,7 +324,14 @@ export default function Dashboard() {
     <div className="h-full flex flex-col">
       {/* ── Top Bar ── */}
       <div className="shrink-0 px-8 pt-5 pb-4 border-b border-border/40">
-        <h1 className="text-base font-bold text-fg-base tracking-tight">技能管理器</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-base font-bold text-fg-base tracking-tight">技能管理器</h1>
+          <button onClick={() => setShowWelcome('reopen')} className="p-1 rounded hover:bg-sidebar-hover text-fg-subtle hover:text-fg-base transition-colors" title="重新显示引导">
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* ── Main: 2 Columns ── */}
@@ -386,9 +403,13 @@ export default function Dashboard() {
               </div>
             ) : sourceMode === 'skills' ? (
               filteredSkills.length === 0 ? (
-                <div className="text-center pt-12">
-                  <FileCode className="w-10 h-10 text-border mx-auto mb-2" />
-                  <p className="text-sm text-fg-muted">{query ? '没有匹配的技能' : '还没有技能，点击上方「导入」开始'}</p>
+                <div className="text-center pt-8 pb-2">
+                  <FileCode className="w-8 h-8 text-border mx-auto mb-2" />
+                  <p className="text-sm font-medium text-fg-muted mb-1">还没有技能</p>
+                  <p className="text-xs text-fg-subtle mb-3">技能是含 SKILL.md 的目录，导入后统一管理</p>
+                  <button className="btn-outline text-xs" onClick={() => setShowImport(true)}>
+                    <FolderOpen className="w-3.5 h-3.5" /> 导入技能
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-0.5">
@@ -533,10 +554,13 @@ export default function Dashboard() {
                 <div key={i} className="h-16 bg-border/40 rounded-xl animate-pulse" />
               ))
             ) : targets.length === 0 ? (
-              <div className="text-center pt-12">
-                <Settings2 className="w-10 h-10 text-border mx-auto mb-2" />
-                <p className="text-sm text-fg-muted">还没有目标目录，点击「添加」配置</p>
-                <p className="text-xs text-fg-subtle mt-1">例如: ~/.claude/skills、~/.reasonix/skills</p>
+              <div className="text-center pt-8 pb-2">
+                <Settings2 className="w-8 h-8 text-border mx-auto mb-2" />
+                <p className="text-sm font-medium text-fg-muted mb-1">还没有目标目录</p>
+                <p className="text-xs text-fg-subtle mb-3">目标目录是 AI 读取技能的位置，如 ~/.claude/skills</p>
+                <button className="btn-outline text-xs" onClick={() => setShowAddTarget(true)}>
+                  <Plus className="w-3.5 h-3.5" /> 添加目录
+                </button>
               </div>
             ) : (
               targets.map(t => (
@@ -640,6 +664,12 @@ export default function Dashboard() {
                 )}
               </button>
             </div>
+            <div className="bg-bg-base/60 rounded-lg px-3 py-2">
+              <p className="text-xs text-fg-muted flex items-start gap-1.5">
+                <span className="text-base shrink-0">&#9888;&#65039;</span>
+                <span>同步会覆盖目标目录所有内容，同步前自动备份到 ~/.skill-web/backups/</span>
+              </p>
+            </div>
 
 
           </div>
@@ -688,8 +718,11 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : importDir.trim() ? (
-              <div className="mb-4 px-4 py-3 rounded-xl bg-border/20 border border-dashed border-border/60 text-center">
-                <p className="text-xs text-fg-muted">请先点击「扫描」预览技能列表</p>
+              <div className="mb-4 px-4 py-3 rounded-xl bg-border/20 border border-dashed border-border/60">
+                <p className="text-xs text-fg-muted flex items-center gap-1.5">
+                  <span className="text-base">&#128203;</span>
+                  先点击「扫描」预览技能。技能是含 SKILL.md 的目录。
+                </p>
               </div>
             ) : null}
 
@@ -769,6 +802,63 @@ export default function Dashboard() {
                 <button className="btn-ghost" onClick={() => setShowAddSkills(false)}>取消</button>
                 <button className="btn-primary" disabled={selectedAddSkills.size === 0} onClick={handleAddSkills}>确认追加</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Welcome Dialog */}
+      {showWelcome && (
+        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-bg-card rounded-xl p-6 w-full max-w-md mx-4 shadow-dialog border border-border/60">
+            <h2 className="text-base font-semibold flex items-center gap-2 mb-1">
+              <Layers className="w-5 h-5 text-accent" />
+              技能管理器
+            </h2>
+            <p className="text-sm text-fg-muted mb-5 leading-relaxed">
+              你拥有技能，你决定 AI 用什么。<br/>
+              AI 从目标目录加载技能。<br/>
+              这里是你管理技能的地方。
+            </p>
+
+            <div className="space-y-2.5 mb-5">
+              <div className="flex items-start gap-3 px-3.5 py-2.5 rounded-lg bg-accent-bg/20">
+                <span className="w-5 h-5 rounded-full bg-accent text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">1</span>
+                <div>
+                  <p className="text-sm font-medium">导入已有技能到库</p>
+                  <p className="text-xs text-fg-muted mt-0.5">扫描本地目录，收录含 SKILL.md 的技能</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 px-3.5 py-2.5 rounded-lg bg-accent-bg/20">
+                <span className="w-5 h-5 rounded-full bg-accent text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">2</span>
+                <div>
+                  <p className="text-sm font-medium">按场景分组</p>
+                  <p className="text-xs text-fg-muted mt-0.5">把技能组合成群，按需使用</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 px-3.5 py-2.5 rounded-lg bg-accent-bg/20">
+                <span className="w-5 h-5 rounded-full bg-accent text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">3</span>
+                <div>
+                  <p className="text-sm font-medium">同步给 AI</p>
+                  <p className="text-xs text-fg-muted mt-0.5">选择哪些技能给 AI，同步后 AI 那边跟着增减</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-bg-base rounded-lg px-3.5 py-2.5 mb-5">
+              <p className="text-xs font-medium text-accent-dark flex items-center gap-1.5">
+                <span className="text-base">&#9888;&#65039;</span>
+                同步前自动备份旧内容<br/>
+                选错了或后悔了，去 ~/.skill-web/backups/ 找回
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
+              {showWelcome === 'first' ? (
+                <button className="btn-primary" onClick={dismissWelcome}>知道了，开始使用</button>
+              ) : (
+                <button className="btn-ghost" onClick={() => setShowWelcome(null)}>关闭</button>
+              )}
             </div>
           </div>
         </div>
