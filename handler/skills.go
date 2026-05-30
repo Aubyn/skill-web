@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"bufio"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"skill-web/db"
 	"skill-web/scanner"
@@ -138,6 +140,44 @@ func (h *SkillHandler) ScanPreview(c echo.Context) error {
 	})
 }
 
+// extractDescription reads the YAML frontmatter from a skill's markdown file
+// and returns the description field value.
+func extractDescription(storeDir, id string) string {
+	// Try SKILL.md or <id>.md
+	candidates := []string{
+		filepath.Join(storeDir, id, "SKILL.md"),
+		filepath.Join(storeDir, id, id+".md"),
+	}
+	for _, path := range candidates {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		defer f.Close()
+
+		scanner := bufio.NewScanner(f)
+		// Expect first line to be "---"
+		if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
+			continue
+		}
+		// Scan until closing "---"
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.TrimSpace(line) == "---" {
+				break
+			}
+			if strings.HasPrefix(line, "description:") || strings.HasPrefix(line, "description :") {
+				val := strings.TrimSpace(line[strings.Index(line, ":")+1:])
+				val = strings.Trim(val, ` "'`)
+				if val != "" {
+					return val
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // POST /api/import
 func (h *SkillHandler) Import(c echo.Context) error {
 	var req struct {
@@ -173,11 +213,13 @@ func (h *SkillHandler) Import(c echo.Context) error {
 			continue
 		}
 
+		desc := extractDescription(h.StoreDir, e.ID)
 		skill := &db.Skill{
-			ID:         e.ID,
-			SourcePath: e.SourcePath,
-			StorePath:  destDir,
-			SkillType:  "dir",
+			ID:          e.ID,
+			SourcePath:  e.SourcePath,
+			StorePath:   destDir,
+			SkillType:   "dir",
+			Description: desc,
 		}
 		if err := h.DB.UpsertSkill(skill); err != nil {
 			continue

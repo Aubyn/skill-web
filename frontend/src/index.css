@@ -12,7 +12,7 @@
   }
 
   h1, h2, h3, h4 {
-    @apply font-display;
+    @apply font-display font-semibold tracking-tight;
   }
 }
 
@@ -28,20 +28,22 @@
   }
 
   .card-base {
-    @apply bg-bg-card rounded-lg shadow-card border border-border
+    @apply bg-bg-card rounded-lg shadow-card border border-border/60
            transition-all duration-200;
   }
 
   .card-hover {
-    @apply card-base hover:shadow-card-hover hover:-translate-y-0.5;
+    @apply card-base cursor-pointer
+           hover:shadow-card-hover hover:-translate-y-0.5 hover:border-border-hover;
   }
 
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md
-           text-sm font-medium text-white bg-accent
-           hover:bg-accent-dark active:bg-accent-dark
-           transition-colors duration-150
-           disabled:opacity-50 disabled:cursor-not-allowed;
+           text-sm font-medium text-white bg-accent shadow-btn
+           hover:bg-accent-dark hover:shadow-card-hover hover:-translate-y-0.5
+           active:translate-y-0 active:shadow-btn
+           transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-btn disabled:hover:translate-y-0;
   }
 
   .btn-ghost {
@@ -54,16 +56,16 @@
 
   .btn-outline {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md
-           text-sm font-medium text-fg-base border border-border
-           hover:bg-sidebar-hover hover:border-border-hover
-           transition-colors duration-150
+           text-sm font-medium text-fg-base border border-border/60
+           hover:bg-sidebar-hover hover:border-border-hover hover:shadow-card
+           transition-all duration-150
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .input-field {
-    @apply w-full px-3 py-2 rounded-md border border-border bg-white
+    @apply w-full px-3 py-2 rounded-md border border-border/60 bg-bg-card
            text-sm text-fg-base placeholder:text-fg-subtle
-           focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent
+           focus:outline-none focus:ring-2 focus:ring-accent/15 focus:border-accent/40
            transition-all duration-150;
   }
 
@@ -85,5 +87,27 @@
 
   .page-subtitle {
     @apply text-sm text-fg-muted mt-1;
+  }
+
+  .scroll-area {
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .scroll-area::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scroll-area::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scroll-area::-webkit-scrollbar-thumb {
+    background: #e5ddd4;
+    border-radius: 3px;
+  }
+
+  .scroll-area::-webkit-scrollbar-thumb:hover {
+    background: #9e9690;
   }
 }

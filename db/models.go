@@ -1,11 +1,12 @@
 package db
 
 type Skill struct {
-	ID         string `json:"id"`
-	SourcePath string `json:"source_path"`
-	StorePath  string `json:"store_path"`
-	SkillType  string `json:"skill_type"`
-	CreatedAt  string `json:"created_at"`
+	ID          string `json:"id"`
+	SourcePath  string `json:"source_path"`
+	StorePath   string `json:"store_path"`
+	SkillType   string `json:"skill_type"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type SkillGroup struct {

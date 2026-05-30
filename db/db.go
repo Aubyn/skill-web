@@ -40,6 +40,9 @@ func Open() (*DB, error) {
 		return nil, fmt.Errorf("exec schema: %w", err)
 	}
 
+	// Migration: add description column if missing
+	sqldb.Exec("ALTER TABLE skills ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+
 	return &DB{sqldb}, nil
 }
 
@@ -60,7 +63,7 @@ func (d *DB) ListSkills(q string, page, pageSize int) ([]Skill, int, error) {
 	}
 
 	offset := (page - 1) * pageSize
-	query := fmt.Sprintf("SELECT id, source_path, store_path, skill_type, created_at FROM skills %s ORDER BY id LIMIT ? OFFSET ?", where)
+	query := fmt.Sprintf("SELECT id, source_path, store_path, skill_type, description, created_at FROM skills %s ORDER BY id LIMIT ? OFFSET ?", where)
 	args = append(args, pageSize, offset)
 
 	rows, err := d.Query(query, args...)
@@ -72,7 +75,7 @@ func (d *DB) ListSkills(q string, page, pageSize int) ([]Skill, int, error) {
 	var skills []Skill
 	for rows.Next() {
 		var s Skill
-		if err := rows.Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.Description, &s.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		skills = append(skills, s)
@@ -82,8 +85,8 @@ func (d *DB) ListSkills(q string, page, pageSize int) ([]Skill, int, error) {
 
 func (d *DB) GetSkill(id string) (*Skill, error) {
 	var s Skill
-	err := d.QueryRow("SELECT id, source_path, store_path, skill_type, created_at FROM skills WHERE id = ?", id).
-		Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.CreatedAt)
+	err := d.QueryRow("SELECT id, source_path, store_path, skill_type, description, created_at FROM skills WHERE id = ?", id).
+		Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.Description, &s.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -94,9 +97,9 @@ func (d *DB) GetSkill(id string) (*Skill, error) {
 }
 
 func (d *DB) UpsertSkill(s *Skill) error {
-	_, err := d.Exec(`INSERT INTO skills (id, source_path, store_path, skill_type) VALUES (?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, store_path=excluded.store_path`,
-		s.ID, s.SourcePath, s.StorePath, s.SkillType)
+	_, err := d.Exec(`INSERT INTO skills (id, source_path, store_path, skill_type, description) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, store_path=excluded.store_path, description=excluded.description`,
+		s.ID, s.SourcePath, s.StorePath, s.SkillType, s.Description)
 	return err
 }
 
@@ -173,7 +176,7 @@ func (d *DB) DeleteGroup(id int) error {
 
 func (d *DB) GetGroupSkills(groupID int) ([]Skill, error) {
 	rows, err := d.Query(`
-		SELECT s.id, s.source_path, s.store_path, s.skill_type, s.created_at
+		SELECT s.id, s.source_path, s.store_path, s.skill_type, s.description, s.created_at
 		FROM skills s
 		JOIN group_skills gs ON gs.skill_id = s.id
 		WHERE gs.group_id = ?
@@ -186,7 +189,7 @@ func (d *DB) GetGroupSkills(groupID int) ([]Skill, error) {
 	var skills []Skill
 	for rows.Next() {
 		var s Skill
-		if err := rows.Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.SourcePath, &s.StorePath, &s.SkillType, &s.Description, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		skills = append(skills, s)

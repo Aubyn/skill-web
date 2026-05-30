@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS skills (
     source_path TEXT NOT NULL,
     store_path  TEXT NOT NULL,
     skill_type  TEXT NOT NULL DEFAULT 'dir' CHECK(skill_type = 'dir'),
+    description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

@@ -3,6 +3,7 @@ export interface Skill {
   source_path: string
   store_path: string
   skill_type: 'dir'
+  description: string
   created_at: string
 }
 
