@@ -150,6 +150,8 @@ func seedDefaultTargets(database *db.DB) {
 		{"~/.claude/skills", "Claude"},
 		{"~/.reasonix/skills", "Reasonix"},
 		{"~/.agents/skills", "通用 Agent"},
+		{"~/.pi/skills", "Pi Agent"},
+		{"~/.opencode/skills", "Opencode"},
 	}
 	for _, d := range defaults {
 		database.CreateTarget(d.path, d.label)
