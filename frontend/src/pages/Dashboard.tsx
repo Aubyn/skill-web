@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Search, Plus, FolderOpen, Trash2, FileCode, Layers, ChevronRight,
   ChevronDown, Settings2, FolderOpen as FolderIcon, Loader2,
-  ArrowRightToLine, Eye, Check
+  ArrowRightToLine, Eye, Check, Copy
 } from 'lucide-react'
 import { api, type Skill, type SkillGroup, type TargetDir, type ScanResult } from '../api/client'
 import { ScrollArea } from '../components/ScrollArea'
@@ -176,6 +176,7 @@ export default function Dashboard() {
     try {
       await api.deleteTarget(id)
       if (expandedTarget === id) { setExpandedTarget(null); setTargetSkills(prev => { const n = { ...prev }; delete n[id]; return n }) }
+      setSelectedTargets(prev => { const next = new Set(prev); next.delete(id); return next })
       loadData()
     } catch { alert('删除失败') }
   }
@@ -928,7 +929,7 @@ export default function Dashboard() {
       {skillDetail && (
         <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSkillDetail(null)}>
           <div className="bg-bg-card rounded-xl p-6 w-full max-w-lg mx-4 shadow-dialog border border-border/60" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold flex items-center gap-2">
                 <FileCode className="w-4 h-4 text-accent" />
                 {skillDetail.skill.id}
@@ -939,24 +940,38 @@ export default function Dashboard() {
             </div>
 
             {/* Metadata */}
-            <div className="space-y-2 mb-4 text-sm">
-              <div className="flex justify-between">
-                <span className="text-fg-muted">类型</span>
-                <span className="font-medium">{skillDetail.skill.skill_type}</span>
-              </div>
+            <div className="space-y-3 mb-5 text-sm">
               {skillDetail.skill.description && (
-                <div className="flex flex-col gap-0.5">
+                <div className="flex flex-col gap-1">
                   <span className="text-fg-muted">描述</span>
-                  <span className="text-sm">{skillDetail.skill.description}</span>
+                  <span className="text-sm bg-bg-base rounded-lg px-3 py-2">{skillDetail.skill.description}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-fg-muted">来源路径</span>
-                <span className="text-xs font-mono text-right max-w-[70%] truncate" title={skillDetail.skill.source_path}>{skillDetail.skill.source_path}</span>
+              <div className="flex justify-between items-center gap-3">
+                <span className="text-fg-muted shrink-0">来源路径</span>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-xs font-mono text-right truncate" title={skillDetail.skill.source_path}>{skillDetail.skill.source_path}</span>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(skillDetail.skill.source_path); toast({ type: 'success', title: '已复制', message: '来源路径已复制到剪贴板' }) }}
+                    className="p-1 rounded hover:bg-sidebar-hover text-fg-muted hover:text-fg-base transition-colors shrink-0"
+                    title="复制路径"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-fg-muted">存储路径</span>
-                <span className="text-xs font-mono text-right max-w-[70%] truncate" title={skillDetail.skill.store_path}>{skillDetail.skill.store_path}</span>
+              <div className="flex justify-between items-center gap-3">
+                <span className="text-fg-muted shrink-0">存储路径</span>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-xs font-mono text-right truncate" title={skillDetail.skill.store_path}>{skillDetail.skill.store_path}</span>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(skillDetail.skill.store_path); toast({ type: 'success', title: '已复制', message: '存储路径已复制到剪贴板' }) }}
+                    className="p-1 rounded hover:bg-sidebar-hover text-fg-muted hover:text-fg-base transition-colors shrink-0"
+                    title="复制路径"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
               <div className="flex justify-between">
                 <span className="text-fg-muted">导入时间</span>
@@ -966,19 +981,19 @@ export default function Dashboard() {
 
             {/* Files */}
             <div>
-              <p className="text-sm font-medium text-fg-muted mb-2">文件结构</p>
+              <p className="text-sm font-medium text-fg-muted mb-3">文件结构</p>
               {skillDetail.files.length === 0 ? (
                 <p className="text-xs text-fg-subtle">（空目录）</p>
               ) : (
-                <div className="bg-bg-base rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">
+                <div className="bg-bg-base rounded-lg p-4 max-h-48 overflow-y-auto space-y-1">
                   {skillDetail.files.map(f => (
-                    <div key={f} className="text-xs font-mono text-fg-muted px-1 py-0.5 hover:text-fg-base">{f}</div>
+                    <div key={f} className="text-xs font-mono text-fg-muted px-2 py-1 rounded hover:bg-sidebar-hover hover:text-fg-base transition-colors">{f}</div>
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="flex justify-end pt-2 mt-4 border-t border-border/60">
+            <div className="flex justify-end pt-3 mt-5 border-t border-border/60">
               <button className="btn-ghost text-sm" onClick={() => setSkillDetail(null)}>关闭</button>
             </div>
           </div>
