@@ -151,7 +151,8 @@ func seedDefaultTargets(database *db.DB) {
 		{"~/.reasonix/skills", "Reasonix"},
 		{"~/.agents/skills", "通用 Agent"},
 		{"~/.pi/skills", "Pi Agent"},
-		{"~/.opencode/skills", "Opencode"},
+		{"~/.config/opencode/skills", "Opencode"},
+		{"~/.deepx/skills", "deepx-code"},
 	}
 	for _, d := range defaults {
 		database.CreateTarget(d.path, d.label)
