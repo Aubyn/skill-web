@@ -29,7 +29,7 @@ func resolvePath(path string) string {
 	return path
 }
 
-// GET /api/targets/:id/skills — list symlinked skills in a target directory
+// GET /api/targets/:id/skills — list deployed skills in a target directory
 func (h *TargetHandler) ListSkills(c echo.Context) error {
 	id, err := parseIntParam(c.Param("id"))
 	if err != nil {
@@ -62,7 +62,7 @@ func (h *TargetHandler) ListSkills(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
+		if fi.IsDir() {
 			skills = append(skills, e.Name())
 		}
 	}
@@ -76,7 +76,7 @@ func (h *TargetHandler) ListSkills(c echo.Context) error {
 	})
 }
 
-// POST /api/targets/:id/clear — remove all symlinks from a target directory
+// POST /api/targets/:id/clear — remove all deployed skills from a target directory
 func (h *TargetHandler) Clear(c echo.Context) error {
 	id, err := parseIntParam(c.Param("id"))
 	if err != nil {
@@ -98,7 +98,7 @@ func (h *TargetHandler) Clear(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "目录不存在或不可读: " + err.Error()})
 	}
 
-	// Backup existing symlinks
+	// Backup existing entries
 	home, _ := os.UserHomeDir()
 	ts := time.Now().Format("2006-01-02T150405")
 	backupDir := filepath.Join(home, ".skill-web", "backups", "clear-"+ts, filepath.Base(targetPath))
@@ -115,18 +115,24 @@ func (h *TargetHandler) Clear(c echo.Context) error {
 		if err != nil {
 			continue
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
+		if fi.Mode()&os.ModeSymlink != 0 || fi.IsDir() {
 			backupPath := filepath.Join(backupDir, e.Name())
 
 			// Try rename first (fails if cross-filesystem)
 			err := os.Rename(fullPath, backupPath)
 			if err != nil {
-				// Fallback: copy + delete
-				if copyErr := copySymlink(fullPath, backupPath); copyErr != nil {
+				// Cross-filesystem fallback: copy + delete
+				var copyErr error
+				if fi.IsDir() {
+					copyErr = copyDir(fullPath, backupPath)
+				} else {
+					copyErr = copySymlink(fullPath, backupPath)
+				}
+				if copyErr != nil {
 					failed = append(failed, e.Name())
 					continue
 				}
-				os.Remove(fullPath)
+				os.RemoveAll(fullPath)
 			}
 			removed = append(removed, e.Name())
 		}
