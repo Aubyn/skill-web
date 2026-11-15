@@ -22,16 +22,29 @@ type Result struct {
 	TotalSynced    int            `json:"total_synced"`
 }
 
-// Sync deploys skills from storeDir to target dirs.
-// Each skill is hard-linked file-by-file from storeDir/<skillName> to targetDir/<skillName>.
-func Sync(storeDir string, skillIDs []string, targetPaths []string) (*Result, error) {
+// SkillRef points at one skill in the library. Name is the directory name
+// deployed into targets; StorePath is the source directory to hard-link from.
+type SkillRef struct {
+	ID        string
+	Name      string
+	StorePath string
+}
+
+// Sync deploys skills from the library to target dirs.
+// Each skill is hard-linked file-by-file from StorePath to targetDir/<name>.
+func Sync(skills []SkillRef, targetPaths []string) (*Result, error) {
 	home, _ := os.UserHomeDir()
 	ts := time.Now().Format("2006-01-02T150405")
 	backupDir := filepath.Join(home, ".skill-web", "backups", ts)
 
+	resolved := make([]string, 0, len(skills))
+	for _, sk := range skills {
+		resolved = append(resolved, skillName(sk))
+	}
+
 	res := &Result{
 		Results:        make([]TargetResult, 0, len(targetPaths)),
-		ResolvedSkills: skillIDs,
+		ResolvedSkills: resolved,
 		BackupPath:     backupDir,
 	}
 
@@ -78,24 +91,36 @@ func Sync(storeDir string, skillIDs []string, targetPaths []string) (*Result, er
 		}
 
 		// Create hard links for each skill (file-by-file)
-		for _, sid := range skillIDs {
-			src := filepath.Join(storeDir, sid)
-			dst := filepath.Join(targetPath, sid)
+		usedNames := map[string]string{}
+		for _, sk := range skills {
+			name := skillName(sk)
+			dst := filepath.Join(targetPath, name)
+
+			// Target directory names are flat: reject duplicate names across groups.
+			if prev, ok := usedNames[name]; ok {
+				tr.Failed = append(tr.Failed, fmt.Sprintf("%s (name conflict with %s)", name, prev))
+				continue
+			}
+			usedNames[name] = sk.ID
 
 			// Check if source exists
-			if _, err := os.Stat(src); os.IsNotExist(err) {
-				tr.Failed = append(tr.Failed, sid+" (source not found)")
+			if sk.StorePath == "" {
+				tr.Failed = append(tr.Failed, name+" (source not found)")
+				continue
+			}
+			if _, err := os.Stat(sk.StorePath); os.IsNotExist(err) {
+				tr.Failed = append(tr.Failed, name+" (source not found)")
 				continue
 			}
 
 			// Remove existing if any
 			os.RemoveAll(dst)
 
-			if err := hardLinkDir(src, dst); err != nil {
-				tr.Failed = append(tr.Failed, sid)
+			if err := hardLinkDir(sk.StorePath, dst); err != nil {
+				tr.Failed = append(tr.Failed, name)
 				continue
 			}
-			tr.Synced = append(tr.Synced, sid)
+			tr.Synced = append(tr.Synced, name)
 		}
 
 		res.TotalSynced += len(tr.Synced)
@@ -108,6 +133,18 @@ func Sync(storeDir string, skillIDs []string, targetPaths []string) (*Result, er
 	}
 
 	return res, nil
+}
+
+// skillName returns the flat directory name to deploy for a skill.
+func skillName(sk SkillRef) string {
+	name := sk.Name
+	if name == "" {
+		name = filepath.Base(sk.StorePath)
+	}
+	if name == "" || name == "." {
+		name = sk.ID
+	}
+	return name
 }
 
 // hardLinkDir recursively creates hard links for each file in src at dst.

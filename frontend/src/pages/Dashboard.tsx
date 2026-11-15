@@ -10,6 +10,13 @@ import { useToast } from '../components/Toast'
 
 type SourceMode = 'skills' | 'groups'
 
+// deriveGroup turns a package path into a default group name: waza.zip -> waza.
+function deriveGroup(path: string): string {
+  const clean = path.trim().replace(/[\\/]+$/, '')
+  const base = clean.split(/[\\/]/).pop() || ''
+  return base.replace(/\.zip$/i, '').trim()
+}
+
 export default function Dashboard() {
   // ── Data ──
   const [skills, setSkills] = useState<Skill[]>([])
@@ -24,6 +31,7 @@ export default function Dashboard() {
   const [sourceMode, setSourceMode] = useState<SourceMode>('skills')
   const [query, setQuery] = useState('')
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set())
+  const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set())
   const [expandedGroup, setExpandedGroup] = useState<number | null>(null)
 
   // ── Right Column: Target ──
@@ -47,9 +55,19 @@ export default function Dashboard() {
   // ── Dialogs ──
   const [showImport, setShowImport] = useState(false)
   const [importDir, setImportDir] = useState('')
+  const [importGroup, setImportGroup] = useState('')
+  const [importGroupEdited, setImportGroupEdited] = useState(false)
+  const [createCollection, setCreateCollection] = useState(false)
   const [importPreview, setImportPreview] = useState<ScanResult | null>(null)
   const [selectedImportSkills, setSelectedImportSkills] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
+
+  const importConflictNames = importPreview
+    ? importPreview.found
+        .filter(s => (importPreview.existing[s.name] || []).includes(importGroup.trim()))
+        .map(s => s.name)
+    : []
+  const collectionExists = groups.some(g => g.name === importGroup.trim())
 
   const [showCreateGroup, setShowCreateGroup] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
@@ -64,6 +82,11 @@ export default function Dashboard() {
   const [newTargetPath, setNewTargetPath] = useState('')
   const [newTargetLabel, setNewTargetLabel] = useState('')
 
+  // Skills available to add to the currently expanded collection.
+  const addableSkills = expandedGroup === null
+    ? []
+    : allSkills.filter(s => !(groupSkills[expandedGroup] || []).find(gs => gs.id === s.id))
+
   // ── Load data ──
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -76,6 +99,10 @@ export default function Dashboard() {
       setSkills(sd.skills)
       setGroups(gd.groups)
       setTargets(td.targets)
+      setSelectedGroups(prev => {
+        const ids = new Set(gd.groups.map(g => g.id))
+        return new Set([...prev].filter(id => ids.has(id)))
+      })
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
@@ -108,6 +135,14 @@ export default function Dashboard() {
     })
   }
 
+  const toggleGroupSelection = (id: number) => {
+    setSelectedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
   const toggleExpandGroup = async (id: number) => {
     if (expandedGroup === id) { setExpandedGroup(null); return }
     setExpandedGroup(id)
@@ -132,8 +167,8 @@ export default function Dashboard() {
   }
 
   // ── Left: delete skill ──
-  const handleDeleteSkill = async (id: string) => {
-    if (!confirm(`确定要从技能库中删除「${id}」？`)) return
+  const handleDeleteSkill = async (id: string, name: string) => {
+    if (!confirm(`确定要从技能库中删除「${name}」？`)) return
     try {
       await api.deleteSkill(id)
       if (query) handleSearch(query); else loadData()
@@ -152,10 +187,11 @@ export default function Dashboard() {
 
   // ── Left: delete group ──
   const handleDeleteGroup = async (id: number) => {
-    if (!confirm('确定删除此技能组？')) return
+    if (!confirm('确定删除此技能集合？')) return
     try {
       await api.deleteGroup(id)
       if (expandedGroup === id) setExpandedGroup(null)
+      setSelectedGroups(prev => { const next = new Set(prev); next.delete(id); return next })
       loadData()
     } catch { alert('删除失败') }
   }
@@ -194,8 +230,8 @@ export default function Dashboard() {
       skillIds = Array.from(selectedSkills)
       if (skillIds.length === 0) return alert('请在左侧勾选要同步的技能')
     } else {
-      if (expandedGroup === null) return alert('请在左侧展开一个技能组')
-      groupIds = [expandedGroup]
+      groupIds = Array.from(selectedGroups)
+      if (groupIds.length === 0) return alert('请在左侧勾选技能集合')
     }
 
     // Check if target directories exist
@@ -239,12 +275,25 @@ export default function Dashboard() {
   }
 
   // ── Import ──
+  const closeImport = () => {
+    setShowImport(false)
+    setImportDir('')
+    setImportGroup('')
+    setImportGroupEdited(false)
+    setCreateCollection(false)
+    setImportPreview(null)
+    setSelectedImportSkills(new Set())
+  }
+
   const handleScan = async () => {
     if (!importDir.trim()) return
     try {
       const result = await api.scanPreview(importDir)
       setImportPreview(result)
       setSelectedImportSkills(new Set(result.found.map(s => s.id)))
+      if (!importGroupEdited && result.suggested_group) {
+        setImportGroup(result.suggested_group)
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '扫描失败'
       alert(msg)
@@ -253,14 +302,36 @@ export default function Dashboard() {
 
   const handleImport = async () => {
     if (!importPreview) return
+    const group = importGroup.trim()
+    if (!group) {
+      alert('请填写技能组名')
+      return
+    }
+    if (importConflictNames.length > 0) {
+      const selectedConflicts = importConflictNames.filter(n => selectedImportSkills.has(n))
+      if (selectedConflicts.length > 0) {
+        const ok = confirm(`技能组「${group}」中已存在同名技能：${selectedConflicts.join('、')}\n继续导入将覆盖它们，确定继续？`)
+        if (!ok) return
+      }
+    }
     setImporting(true)
     try {
       const skillIds = [...selectedImportSkills]
-      await api.importSkills(importDir, skillIds.length < importPreview.total ? skillIds : undefined)
-      setShowImport(false)
-      setImportDir('')
-      setImportPreview(null)
-      setSelectedImportSkills(new Set())
+      const result = await api.importSkills(importDir, group, createCollection, skillIds.length < importPreview.total ? skillIds : undefined)
+      if (result.collection) {
+        toast({
+          type: 'success',
+          title: `导入完成 — ${result.total} 个技能`,
+          message: result.collection.created
+            ? `已创建技能集合「${result.collection.name}」`
+            : `已加入技能集合「${result.collection.name}」`,
+        })
+      } else if (result.collection_error) {
+        toast({ type: 'error', title: '导入完成，但创建技能集合失败', message: result.collection_error })
+      } else {
+        toast({ type: 'success', title: `导入完成 — ${result.total} 个技能` })
+      }
+      closeImport()
       loadData()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '导入失败'
@@ -357,7 +428,7 @@ export default function Dashboard() {
               className={`px-3 py-1.5 text-sm rounded-md font-medium transition-all
                 ${sourceMode === 'groups' ? 'bg-bg-card text-fg-base shadow-sm' : 'text-fg-muted hover:text-fg-base'}`}
             >
-              技能组
+              技能集合
             </button>
             {sourceMode === 'skills' && (
               <>
@@ -368,7 +439,7 @@ export default function Dashboard() {
                     setNewGroupDesc('')
                     setShowCreateGroup(true)
                   }}>
-                    <Layers className="w-3.5 h-3.5" /> 新建组
+                    <Layers className="w-3.5 h-3.5" /> 新建集合
                   </button>
                 )}
                 <button className="btn-ghost text-xs" onClick={() => setShowImport(true)}>
@@ -378,7 +449,7 @@ export default function Dashboard() {
             )}
             {sourceMode === 'groups' && (
               <button className="btn-ghost text-xs ml-auto" onClick={() => setShowCreateGroup(true)}>
-                <Layers className="w-3.5 h-3.5" /> 新建组
+                <Layers className="w-3.5 h-3.5" /> 新建集合
               </button>
             )}
           </div>
@@ -390,7 +461,7 @@ export default function Dashboard() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle pointer-events-none" />
                 <input
                   className="input-field pl-9 text-sm"
-                  placeholder="按名称或来源路径筛选"
+                  placeholder="按名称/技能组/来源路径筛选"
                   value={query}
                   onChange={e => handleSearch(e.target.value)}
                 />
@@ -449,7 +520,12 @@ export default function Dashboard() {
                       </div>
                       <FileCode className="w-4 h-4 text-fg-subtle shrink-0 mt-1" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium truncate">{s.id}</div>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium truncate">{s.name || s.id}</span>
+                          {s.group && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-base text-fg-muted shrink-0">{s.group}</span>
+                          )}
+                        </div>
                         {s.description && (
                           <div className="text-xs text-fg-muted truncate" title={s.description}>{s.description}</div>
                         )}
@@ -462,7 +538,7 @@ export default function Dashboard() {
                         <Eye className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={e => { e.stopPropagation(); handleDeleteSkill(s.id) }}
+                        onClick={e => { e.stopPropagation(); handleDeleteSkill(s.id, s.name || s.id) }}
                         className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-bg-base text-fg-muted hover:text-accent transition-opacity"
                         title="删除"
                       >
@@ -477,24 +553,54 @@ export default function Dashboard() {
               groups.length === 0 ? (
                 <div className="text-center pt-12">
                   <Layers className="w-10 h-10 text-border mx-auto mb-2" />
-                  <p className="text-sm text-fg-muted">还没有技能组</p>
+                  <p className="text-sm text-fg-muted">还没有技能集合</p>
                 </div>
               ) : (
                 <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 px-1 py-1 mb-1">
+                    <button className="text-xs text-fg-muted hover:text-fg-base transition-colors"
+                      onClick={() => {
+                        if (selectedGroups.size === groups.length) {
+                          setSelectedGroups(new Set())
+                        } else {
+                          setSelectedGroups(new Set(groups.map(g => g.id)))
+                        }
+                      }}>
+                      {selectedGroups.size === groups.length ? '取消全选' : '全选'}
+                    </button>
+                    <span className="text-xs text-fg-subtle">{selectedGroups.size} 个已选</span>
+                  </div>
                   {groups.map(g => (
                     <div key={g.id} className="rounded-lg overflow-hidden">
-                      {/* Group header */}
+                      {/* 集合头：点击标题/复选框 = 勾选；展开、追加、删除各自独立 */}
                       <div
-                        onClick={() => toggleExpandGroup(g.id)}
-                        className={`flex items-center gap-3 px-3.5 py-2.5 rounded-lg cursor-pointer transition-all group
-                          ${expandedGroup === g.id
-                            ? 'bg-bg-card shadow-sm border border-border/60'
-                            : 'border border-transparent hover:bg-sidebar-hover'}`}
+                        onClick={() => toggleGroupSelection(g.id)}
+                        className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border cursor-pointer transition-all group
+                          ${selectedGroups.has(g.id)
+                            ? 'bg-accent-bg/15 border-accent/30'
+                            : expandedGroup === g.id
+                              ? 'bg-bg-card shadow-sm border-border/60'
+                              : 'border-transparent hover:bg-sidebar-hover'}`}
+                        title={selectedGroups.has(g.id) ? '取消选择' : '选择该集合'}
                       >
-                        {expandedGroup === g.id
-                          ? <ChevronDown className="w-4 h-4 text-fg-subtle shrink-0" />
-                          : <ChevronRight className="w-4 h-4 text-fg-subtle shrink-0" />
-                        }
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleExpandGroup(g.id) }}
+                          className="p-0.5 -m-0.5 rounded text-fg-subtle hover:text-fg-base hover:bg-bg-base shrink-0"
+                          title={expandedGroup === g.id ? '收起集合' : '展开集合'}
+                        >
+                          {expandedGroup === g.id
+                            ? <ChevronDown className="w-4 h-4" />
+                            : <ChevronRight className="w-4 h-4" />
+                          }
+                        </button>
+                        <div
+                          onClick={e => { e.stopPropagation(); toggleGroupSelection(g.id) }}
+                          className={`w-4 h-4 rounded-[4px] flex items-center justify-center shrink-0 transition-all
+                            ${selectedGroups.has(g.id) ? 'bg-accent text-white' : 'border border-border bg-white'}`}
+                          title="选择集合"
+                        >
+                          {selectedGroups.has(g.id) && <Check className="w-3 h-3 stroke-[3]" />}
+                        </div>
                         <Layers className="w-4 h-4 text-accent shrink-0" />
                         <span className="text-sm font-medium flex-1 min-w-0 truncate">{g.name}</span>
                         <span className="text-xs text-fg-muted tabular-nums">{g.skill_count}</span>
@@ -512,7 +618,7 @@ export default function Dashboard() {
                         <button
                           onClick={e => { e.stopPropagation(); handleDeleteGroup(g.id) }}
                           className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-bg-base text-fg-muted hover:text-accent transition-opacity"
-                          title="删除组"
+                          title="删除集合"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -522,19 +628,32 @@ export default function Dashboard() {
                       {expandedGroup === g.id && (
                         <div className="ml-4 mt-1 mb-1 pl-4 border-l-2 border-border/40 space-y-0.5">
                           {groupSkills[g.id]?.length === 0 || !groupSkills[g.id] ? (
-                            <p className="text-xs text-fg-muted py-3 text-center">组内暂无技能</p>
+                            <p className="text-xs text-fg-muted py-3 text-center">集合内暂无技能</p>
                           ) : (
                             (groupSkills[g.id] || []).map(sk => (
-                              <div key={sk.id} className="flex items-center gap-3 px-3 py-2 rounded-lg group/child hover:bg-sidebar-hover transition-colors">
+                              <div key={sk.id} onClick={() => loadSkillDetail(sk.id)}
+                                className="flex items-center gap-3 px-3 py-2 rounded-lg group/child hover:bg-sidebar-hover transition-colors cursor-pointer">
                                 <FileCode className="w-3.5 h-3.5 text-fg-subtle shrink-0 mt-0.5" />
                                 <div className="flex-1 min-w-0">
-                                  <div className="text-sm truncate">{sk.id}</div>
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-sm truncate">{sk.name || sk.id}</span>
+                                    {sk.group && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-base text-fg-muted shrink-0">{sk.group}</span>
+                                    )}
+                                  </div>
                                   {sk.description && (
                                     <div className="text-xs text-fg-muted truncate" title={sk.description}>{sk.description}</div>
                                   )}
                                 </div>
                                 <button
-                                  onClick={() => handleRemoveGroupSkill(g.id, sk.id)}
+                                  onClick={e => { e.stopPropagation(); loadSkillDetail(sk.id) }}
+                                  className="opacity-0 group-hover/child:opacity-100 p-1 rounded hover:bg-bg-base text-fg-muted hover:text-fg-base transition-opacity shrink-0"
+                                  title="查看详情"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={e => { e.stopPropagation(); handleRemoveGroupSkill(g.id, sk.id) }}
                                   className="opacity-0 group-hover/child:opacity-100 text-xs text-fg-muted hover:text-accent transition-opacity shrink-0"
                                 >
                                   移除
@@ -663,8 +782,8 @@ export default function Dashboard() {
               <div className="text-xs text-fg-muted">
                 {sourceMode === 'skills' ? (
                   <>已选 <span className="font-medium text-fg-base tabular-nums">{selectedSkills.size}</span> 个技能</>
-                ) : expandedGroup ? (
-                  <>已选组: <span className="font-medium text-fg-base">{groups.find(g => g.id === expandedGroup)?.name || '未知'}</span></>
+                ) : selectedGroups.size > 0 ? (
+                  <>已选集合: <span className="font-medium text-fg-base tabular-nums">{selectedGroups.size}</span> 个</>
                 ) : (
                   <>未选择来源</>
                 )}
@@ -672,7 +791,7 @@ export default function Dashboard() {
               </div>
               <button
                 className="btn-primary text-sm"
-                disabled={syncing || selectedTargets.size === 0 || (sourceMode === 'skills' ? selectedSkills.size === 0 : expandedGroup === null)}
+                disabled={syncing || selectedTargets.size === 0 || (sourceMode === 'skills' ? selectedSkills.size === 0 : selectedGroups.size === 0)}
                 onClick={handleSync}
               >
                 {syncing ? (
@@ -709,11 +828,35 @@ export default function Dashboard() {
 
 
 <label className="text-sm font-medium text-fg-muted mb-1.5 block">目录路径</label>
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-3">
               <input className="input-field flex-1" placeholder="/home/user/skills 或 /path/to/skills.zip"
-                value={importDir} onChange={e => { setImportDir(e.target.value); setImportPreview(null) }}
+                value={importDir} onChange={e => {
+                  const v = e.target.value
+                  setImportDir(v)
+                  setImportPreview(null)
+                  if (!importGroupEdited) setImportGroup(deriveGroup(v))
+                }}
                 onKeyDown={e => e.key === 'Enter' && handleScan()} />
               <button className="btn-outline" onClick={handleScan}><FolderOpen className="w-4 h-4" /> 扫描</button>
+            </div>
+
+            <label className="text-sm font-medium text-fg-muted mb-1.5 block">技能组</label>
+            <input className="input-field mb-1" placeholder="技能组名（默认取自包名）"
+              value={importGroup}
+              onChange={e => { setImportGroup(e.target.value); setImportGroupEdited(true) }}
+              onKeyDown={e => e.key === 'Enter' && handleScan()} />
+            <p className="text-xs text-fg-subtle mb-2 font-mono truncate" title={`~/.skill-web/skills/${importGroup.trim() || '<技能组>'}/<技能>`}>
+              导入到 ~/.skill-web/skills/{importGroup.trim() || '<技能组>'}/&lt;技能&gt;
+            </p>
+
+            <div className="flex items-center gap-2 mb-4 cursor-pointer select-none" onClick={() => setCreateCollection(v => !v)}>
+              <div className={`w-4 h-4 rounded-[4px] flex items-center justify-center shrink-0 transition-all
+                ${createCollection ? 'bg-accent text-white' : 'border border-border bg-white'}`}>
+                {createCollection && <Check className="w-3 h-3 stroke-[3]" />}
+              </div>
+              <span className="text-sm text-fg-base">
+                {collectionExists ? '同时加入技能集合' : '同时创建技能集合'}「{importGroup.trim() || '未命名'}」
+              </span>
             </div>
 
             {/* Scan results */}
@@ -722,8 +865,8 @@ export default function Dashboard() {
                 <p className="text-sm font-medium text-fg-base mb-2">
                   ✓ 扫描完成 — 发现 {importPreview.total} 个技能
                   <span className="text-fg-muted ml-2 font-normal">已选 {selectedImportSkills.size} 个</span>
-                  {(importPreview.conflicts_with_existing || []).length > 0 && (
-                    <span className="text-accent ml-2">（{(importPreview.conflicts_with_existing || []).length} 个已存在，将覆盖）</span>
+                  {(importConflictNames.length > 0) && (
+                    <span className="text-accent ml-2">（技能组内已有 {importConflictNames.length} 个同名技能，将覆盖）</span>
                   )}
                 </p>
                 <div className="flex items-center gap-2 mb-1.5">
@@ -755,7 +898,7 @@ export default function Dashboard() {
                         {selectedImportSkills.has(s.id) && <Check className="w-2.5 h-2.5 stroke-[3]" />}
                       </div>
                       <FileCode className="w-3.5 h-3.5 text-fg-subtle shrink-0" />
-                      <span>{s.id}</span>
+                      <span className="truncate">{s.name}</span>
                       <span className="text-xs text-fg-muted ml-auto">{s.size}</span>
                     </div>
                   ))}
@@ -765,14 +908,14 @@ export default function Dashboard() {
               <div className="mb-4 px-4 py-3 rounded-xl bg-border/20 border border-dashed border-border/60">
                 <p className="text-xs text-fg-muted flex items-center gap-1.5">
                   <span className="text-base">&#128203;</span>
-                  先点击「扫描」预览技能。技能是含 SKILL.md 的目录。
+                  先点击「扫描」预览技能。若包根目录含 SKILL.md，则只导入根技能。
                 </p>
               </div>
             ) : null}
 
             {/* Actions */}
             <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
-              <button className="btn-ghost" onClick={() => { setShowImport(false); setImportPreview(null); setImportDir('') }}>取消</button>
+              <button className="btn-ghost" onClick={closeImport}>取消</button>
               <button className="btn-primary" disabled={!importPreview || importing || selectedImportSkills.size === 0} onClick={handleImport}>
                 {importing ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> 导入中…</>
@@ -791,11 +934,11 @@ export default function Dashboard() {
       {showCreateGroup && (
         <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-bg-card rounded-xl p-6 w-full max-w-md mx-4 shadow-dialog border border-border/60">
-            <h2 className="text-base font-semibold mb-4">新建技能组</h2>
-            <label className="text-sm font-medium text-fg-muted mb-1.5 block">组名</label>
+            <h2 className="text-base font-semibold mb-4">新建技能集合</h2>
+            <label className="text-sm font-medium text-fg-muted mb-1.5 block">集合名</label>
             <input className="input-field mb-3" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="core-dev" />
             <label className="text-sm font-medium text-fg-muted mb-1.5 block">描述（可选）</label>
-            <input className="input-field mb-4" value={newGroupDesc} onChange={e => setNewGroupDesc(e.target.value)} placeholder="核心开发技能集合" />
+            <input className="input-field mb-4" value={newGroupDesc} onChange={e => setNewGroupDesc(e.target.value)} placeholder="核心开发常用技能" />
             <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
               <button className="btn-ghost" onClick={() => { setShowCreateGroup(false); setNewGroupName(''); setNewGroupDesc('') }}>取消</button>
               <button className="btn-primary" onClick={handleCreateGroup}>创建</button>
@@ -808,36 +951,59 @@ export default function Dashboard() {
       {showAddSkills && expandedGroup !== null && (
         <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-bg-card rounded-xl p-6 w-full max-w-md mx-4 shadow-dialog border border-border/60">
-            <h2 className="text-base font-semibold mb-4">追加技能到组</h2>
+            <h2 className="text-base font-semibold mb-4">追加技能到集合</h2>
             <div className="relative mb-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle" />
-              <input className="input-field pl-9 text-sm" placeholder="按名称或来源路径筛选"
+              <input className="input-field pl-9 text-sm" placeholder="按名称/技能组/来源路径筛选"
                 value={addSkillSearch} onChange={e => searchAddSkills(e.target.value)} />
             </div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <button className="text-xs text-fg-muted hover:text-fg-base transition-colors"
+                onClick={() => {
+                  if (addableSkills.length > 0 && selectedAddSkills.size === addableSkills.length) {
+                    setSelectedAddSkills(new Set())
+                  } else {
+                    setSelectedAddSkills(new Set(addableSkills.map(s => s.id)))
+                  }
+                }}>
+                {addableSkills.length > 0 && selectedAddSkills.size === addableSkills.length ? '取消全选' : '全选'}
+              </button>
+              <span className="text-xs text-fg-subtle">{addableSkills.length} 个可追加</span>
+            </div>
             <ScrollArea className="max-h-64 mb-4 space-y-0.5">
-              {allSkills
-                .filter(s => !(groupSkills[expandedGroup] || []).find(gs => gs.id === s.id))
-                .map(s => (
-                  <label key={s.id}
-                    className={`flex items-start gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors
-                      ${selectedAddSkills.has(s.id) ? 'bg-accent-bg text-accent-dark' : 'hover:bg-sidebar-hover'}`}>
-                    <div onClick={e => { e.stopPropagation(); setSelectedAddSkills(prev => { const next = new Set(prev); if (next.has(s.id)) next.delete(s.id); else next.add(s.id); return next }) }} className={`w-4 h-4 rounded-[4px] flex items-center justify-center shrink-0 mt-1 transition-all cursor-pointer
-                        ${selectedAddSkills.has(s.id)
-                          ? 'bg-accent text-white'
-                          : 'border border-border bg-white'}`}
-                    >
-                      {selectedAddSkills.has(s.id) && <Check className="w-3 h-3 stroke-[3]" />}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium">{s.id}</div>
-                      {s.description && (
-                        <div className="text-xs text-fg-muted truncate" title={s.description}>{s.description}</div>
+              {addableSkills.map(s => (
+                <div key={s.id}
+                  className={`flex items-start gap-3 px-3 py-2 rounded-md transition-colors
+                    ${selectedAddSkills.has(s.id) ? 'bg-accent-bg text-accent-dark' : 'hover:bg-sidebar-hover'}`}>
+                  <div onClick={() => setSelectedAddSkills(prev => { const next = new Set(prev); if (next.has(s.id)) next.delete(s.id); else next.add(s.id); return next })} className={`w-4 h-4 rounded-[4px] flex items-center justify-center shrink-0 mt-1 transition-all cursor-pointer
+                      ${selectedAddSkills.has(s.id)
+                        ? 'bg-accent text-white'
+                        : 'border border-border bg-white'}`}
+                  >
+                    {selectedAddSkills.has(s.id) && <Check className="w-3 h-3 stroke-[3]" />}
+                  </div>
+                  <div className="min-w-0 flex-1 cursor-pointer" onClick={() => loadSkillDetail(s.id)} title="查看详情">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-medium">{s.name || s.id}</span>
+                      {s.group && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-base text-fg-muted shrink-0">{s.group}</span>
                       )}
                     </div>
-                  </label>
-                ))}
-              {allSkills.filter(s => !(groupSkills[expandedGroup] || []).find(gs => gs.id === s.id)).length === 0 && (
-                <p className="text-sm text-fg-muted text-center py-6">所有技能已在组中</p>
+                    {s.description && (
+                      <div className="text-xs text-fg-muted truncate" title={s.description}>{s.description}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => loadSkillDetail(s.id)}
+                    className="p-1 rounded hover:bg-bg-base text-fg-muted hover:text-fg-base transition-colors shrink-0"
+                    title="查看详情"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+              {addableSkills.length === 0 && (
+                <p className="text-sm text-fg-muted text-center py-6">所有技能已在集合中</p>
               )}
             </ScrollArea>
             <div className="flex items-center justify-between pt-2 border-t border-border/60">
@@ -876,8 +1042,8 @@ export default function Dashboard() {
               <div className="flex items-start gap-3 px-3.5 py-2.5 rounded-lg bg-accent-bg/20">
                 <span className="w-5 h-5 rounded-full bg-accent text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">2</span>
                 <div>
-                  <p className="text-sm font-medium">按场景分组</p>
-                  <p className="text-xs text-fg-muted mt-0.5">把技能组合成群，按需使用</p>
+                  <p className="text-sm font-medium">按场景建集合</p>
+                  <p className="text-xs text-fg-muted mt-0.5">把技能组合成集合，按需使用</p>
                 </div>
               </div>
               <div className="flex items-start gap-3 px-3.5 py-2.5 rounded-lg bg-accent-bg/20">
@@ -932,7 +1098,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold flex items-center gap-2">
                 <FileCode className="w-4 h-4 text-accent" />
-                {skillDetail.skill.id}
+                {skillDetail.skill.name || skillDetail.skill.id}
               </h2>
               <button onClick={() => setSkillDetail(null)} className="p-1 rounded hover:bg-sidebar-hover text-fg-muted hover:text-fg-base transition-colors">
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -947,6 +1113,10 @@ export default function Dashboard() {
                   <span className="text-sm bg-bg-base rounded-lg px-3 py-2">{skillDetail.skill.description}</span>
                 </div>
               )}
+              <div className="flex justify-between items-center gap-3">
+                <span className="text-fg-muted shrink-0">技能组</span>
+                <span className="text-xs">{skillDetail.skill.group || '—'}</span>
+              </div>
               <div className="flex justify-between items-center gap-3">
                 <span className="text-fg-muted shrink-0">来源路径</span>
                 <div className="flex items-center gap-1.5 min-w-0">

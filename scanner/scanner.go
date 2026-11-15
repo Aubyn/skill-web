@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,42 +12,48 @@ import (
 )
 
 type Entry struct {
-	ID         string `json:"id"`
-	SkillType  string `json:"skill_type"`
-	Size       string `json:"size"`
-	SourcePath string `json:"-"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	SkillType   string `json:"skill_type"`
+	Size        string `json:"size"`
+	Description string `json:"description"`
+	SourcePath  string `json:"-"`
 }
 
-// Scan discovers skills recursively from dir. Each skill is a directory containing SKILL.md.
-// existing is a set of already-imported skill IDs for detecting conflicts.
-func Scan(dir string, existing map[string]bool, maxDepth int) ([]Entry, []string, error) {
+// Scan discovers skills recursively from dir. Each skill is a directory containing SKILL.md
+// (or <dir>/<dir>.md). If dir itself is a skill, only that root skill is returned.
+// rootFallback names the root skill when its frontmatter has no usable name
+// (for zip imports this is the package name, not the temp directory name).
+func Scan(dir string, rootFallback string, maxDepth int) ([]Entry, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("abs path: %w", err)
+		return nil, fmt.Errorf("abs path: %w", err)
 	}
 
 	info, err := os.Stat(dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("stat dir: %w", err)
+		return nil, fmt.Errorf("stat dir: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("not a directory: %s", dir)
+		return nil, fmt.Errorf("not a directory: %s", dir)
 	}
 
 	entries := []Entry{}
-	conflicts := []string{}
-	seen := map[string]bool{}
 
-	err = scanDir(dir, 0, maxDepth, existing, seen, &entries, &conflicts)
-	if err != nil {
-		return nil, nil, err
+	// Root is a skill: take only the root skill, never recurse into it.
+	if isSkillDir(dir) {
+		entries = append(entries, makeEntry(dir, rootFallback))
+		return entries, nil
 	}
 
+	seen := map[string]bool{}
+	scanDir(dir, 0, maxDepth, seen, &entries)
+
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ID < entries[j].ID
+		return entries[i].Name < entries[j].Name
 	})
 
-	return entries, conflicts, nil
+	return entries, nil
 }
 
 func isSkillDir(dir string) bool {
@@ -63,58 +70,70 @@ func isSkillDir(dir string) bool {
 	return false
 }
 
-func scanDir(dir string, depth, maxDepth int, existing map[string]bool, seen map[string]bool, entries *[]Entry, conflicts *[]string) error {
-	if depth > maxDepth {
+func makeEntry(dir string, fallback string) Entry {
+	base := filepath.Base(dir)
+	meta := readMeta(dir, base)
+
+	name := strings.TrimSpace(meta.name)
+	if !safeName(name) {
+		name = strings.TrimSpace(fallback)
+		if !safeName(name) {
+			name = base
+		}
+	}
+
+	entry := Entry{
+		ID:          name,
+		Name:        name,
+		SkillType:   "dir",
+		Description: meta.description,
+		SourcePath:  dir,
+	}
+
+	var size int64
+	filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && fi != nil {
+			size += fi.Size()
+		}
 		return nil
+	})
+	entry.Size = humanize.Bytes(uint64(size))
+
+	return entry
+}
+
+func scanDir(dir string, depth, maxDepth int, seen map[string]bool, entries *[]Entry) {
+	if depth > maxDepth {
+		return
 	}
 
 	// Check if this directory itself is a recognized skill
 	if isSkillDir(dir) {
-		id := filepath.Base(dir)
+		entry := makeEntry(dir, "")
 
-		// Check for duplicates within this scan
-		if seen[id] {
-			return nil // already added from another path
-		}
-		seen[id] = true
-
-		entry := Entry{
-			ID:         id,
-			SkillType:  "dir",
-			SourcePath: dir,
-		}
-		// Calculate size
-		var size int64
-		filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
-			if err == nil && fi != nil {
-				size += fi.Size()
-			}
-			return nil
-		})
-		entry.Size = humanize.Bytes(uint64(size))
-
-		*entries = append(*entries, entry)
-
-		if existing[id] {
-			*conflicts = append(*conflicts, id)
+		// Keep the first skill with a given name within this scan.
+		if !seen[entry.Name] {
+			seen[entry.Name] = true
+			*entries = append(*entries, entry)
 		}
 
 		// Continue recursion to find sub-skills
-		return scanSubdirs(dir, depth+1, maxDepth, existing, seen, entries, conflicts)
+		scanSubdirs(dir, depth+1, maxDepth, seen, entries)
+		return
 	}
 
 	// Not a skill directory, scan children
-	return scanSubdirs(dir, depth+1, maxDepth, existing, seen, entries, conflicts)
+	scanSubdirs(dir, depth+1, maxDepth, seen, entries)
 }
 
-func scanSubdirs(dir string, depth, maxDepth int, existing map[string]bool, seen map[string]bool, entries *[]Entry, conflicts *[]string) error {
+func scanSubdirs(dir string, depth, maxDepth int, seen map[string]bool, entries *[]Entry) {
 	if depth > maxDepth {
-		return nil
+		return
 	}
 
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return nil // skip unreadable dirs
+		return // skip unreadable dirs
 	}
 
 	for _, f := range files {
@@ -138,10 +157,106 @@ func scanSubdirs(dir string, depth, maxDepth int, existing map[string]bool, seen
 			continue // regular file
 		}
 
-		if err := scanDir(subPath, depth, maxDepth, existing, seen, entries, conflicts); err != nil {
-			// continue scanning other dirs
-			continue
+		scanDir(subPath, depth, maxDepth, seen, entries)
+	}
+}
+
+type meta struct {
+	name        string
+	description string
+}
+
+// readMeta reads frontmatter from SKILL.md, falling back to <base>.md.
+func readMeta(dir, base string) meta {
+	candidates := []string{
+		filepath.Join(dir, "SKILL.md"),
+		filepath.Join(dir, base+".md"),
+	}
+	for _, path := range candidates {
+		if m, ok := parseMeta(path); ok {
+			return m
 		}
 	}
-	return nil
+	return meta{}
+}
+
+// parseMeta reads a small YAML frontmatter subset: name and description.
+func parseMeta(path string) (meta, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return meta{}, false
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024)
+
+	if !sc.Scan() || strings.TrimSpace(sc.Text()) != "---" {
+		return meta{}, false
+	}
+
+	var lines []string
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		lines = append(lines, line)
+	}
+
+	var m meta
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+
+		switch {
+		case strings.HasPrefix(line, "name:"):
+			if m.name == "" {
+				m.name = trimScalar(strings.TrimSpace(line[len("name:"):]))
+			}
+		case strings.HasPrefix(line, "description:"):
+			if m.description != "" {
+				continue
+			}
+			val := trimScalar(strings.TrimSpace(line[len("description:"):]))
+			if isBlockScalar(val) {
+				var parts []string
+				for j := i + 1; j < len(lines); j++ {
+					cont := lines[j]
+					if strings.TrimSpace(cont) == "" || (cont[0] != ' ' && cont[0] != '\t') {
+						break
+					}
+					parts = append(parts, strings.TrimSpace(cont))
+					i = j
+				}
+				val = strings.Join(parts, " ")
+			}
+			m.description = val
+		}
+	}
+
+	return m, true
+}
+
+func trimScalar(s string) string {
+	return strings.Trim(s, ` "'`)
+}
+
+func isBlockScalar(s string) bool {
+	switch s {
+	case "", ">", "|", ">-", "|-", ">+", "|+":
+		return true
+	}
+	return false
+}
+
+func safeName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		if r == '/' || r == '\\' || r < 32 {
+			return false
+		}
+	}
+	return true
 }

@@ -1,5 +1,7 @@
 export interface Skill {
   id: string
+  name: string
+  group: string
   source_path: string
   store_path: string
   skill_type: 'dir'
@@ -24,14 +26,18 @@ export interface TargetDir {
 }
 
 export interface ScanResult {
-  found: Array<{ id: string; skill_type: string; size: string }>
-  conflicts_with_existing: string[]
+  found: Array<{ id: string; name: string; skill_type: string; size: string; description: string }>
+  existing: Record<string, string[]>
+  suggested_group: string
   total: number
 }
 
 export interface ImportResult {
-  imported: Array<{ id: string; source: string; store_path: string }>
+  group: string
+  imported: Array<{ id: string; name: string; group: string; source: string; store_path: string }>
   conflicts: Array<{ name: string; action: string }>
+  collection?: { id: number; name: string; created: boolean; skill_count: number }
+  collection_error?: string
   total: number
 }
 
@@ -81,10 +87,10 @@ export const api = {
   scanPreview: (dir: string) =>
     request<ScanResult>(`/api/scan-preview?dir=${encodeURIComponent(dir)}`),
 
-  importSkills: (dir: string, skillIds?: string[]) =>
+  importSkills: (dir: string, group: string, createCollection: boolean, skillIds?: string[]) =>
     request<ImportResult>('/api/import', {
       method: 'POST',
-      body: JSON.stringify({ dir, skill_ids: skillIds }),
+      body: JSON.stringify({ dir, group, create_collection: createCollection, skill_ids: skillIds }),
     }),
 
   // Groups

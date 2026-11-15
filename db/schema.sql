@@ -1,6 +1,8 @@
 -- Skill library
 CREATE TABLE IF NOT EXISTS skills (
     id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    group_name  TEXT NOT NULL DEFAULT '',
     source_path TEXT NOT NULL,
     store_path  TEXT NOT NULL,
     skill_type  TEXT NOT NULL DEFAULT 'dir' CHECK(skill_type = 'dir'),

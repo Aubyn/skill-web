@@ -2,10 +2,10 @@ package handler
 
 import (
 	"archive/zip"
-	"bufio"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,9 +59,19 @@ func (h *SkillHandler) List(c echo.Context) error {
 	})
 }
 
+// pathSkillID returns the decoded :id path parameter. IDs are namespaced as
+// <group>:<skill>, and clients URL-encode the colon; Echo does not decode it.
+func pathSkillID(c echo.Context) string {
+	id := c.Param("id")
+	if decoded, err := url.PathUnescape(id); err == nil {
+		return decoded
+	}
+	return id
+}
+
 // GET /api/skills/:id
 func (h *SkillHandler) Get(c echo.Context) error {
-	id := c.Param("id")
+	id := pathSkillID(c)
 	skill, err := h.DB.GetSkill(id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -94,7 +104,7 @@ func (h *SkillHandler) Get(c echo.Context) error {
 
 // DELETE /api/skills/:id
 func (h *SkillHandler) Delete(c echo.Context) error {
-	id := c.Param("id")
+	id := pathSkillID(c)
 	skill, err := h.DB.GetSkill(id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -133,88 +143,80 @@ func (h *SkillHandler) ScanPreview(c echo.Context) error {
 		defer cleanup()
 	}
 
-	// Get existing skill IDs
-	existing := map[string]bool{}
-	skills, _, _ := h.DB.ListSkills("", 1, 10000)
-	for _, s := range skills {
-		existing[s.ID] = true
-	}
-
-	entries, conflicts, err := scanner.Scan(scanDir, existing, 20)
+	entries, err := scanner.Scan(scanDir, suggestGroup(dir), 20)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	existing, err := h.DB.SkillNameGroups()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
 	return c.JSON(http.StatusOK, map[string]any{
-		"found":                 entries,
-		"conflicts_with_existing": conflicts,
-		"total":                 len(entries),
+		"found":           entries,
+		"total":           len(entries),
+		"suggested_group": suggestGroup(dir),
+		"existing":        existing,
 	})
 }
 
-// extractDescription reads the YAML frontmatter from a skill's markdown file
-// and returns the description field value.
-func extractDescription(storeDir, id string) string {
-	// Try SKILL.md or <id>.md
-	candidates := []string{
-		filepath.Join(storeDir, id, "SKILL.md"),
-		filepath.Join(storeDir, id, id+".md"),
+// skillID namespaces a skill within its import group.
+func skillID(group, name string) string {
+	return group + ":" + name
+}
+
+// suggestGroup derives a group name from the package path: waza.zip -> waza.
+func suggestGroup(path string) string {
+	base := filepath.Base(filepath.Clean(strings.TrimSpace(path)))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
 	}
-	for _, path := range candidates {
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		defer f.Close()
+	if strings.EqualFold(filepath.Ext(base), ".zip") {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return strings.TrimSpace(base)
+}
 
-		scanner := bufio.NewScanner(f)
-		// Expect first line to be "---"
-		if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
-			continue
-		}
-		// Scan until closing "---"
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.TrimSpace(line) == "---" {
-				break
-			}
-			if strings.HasPrefix(line, "description:") || strings.HasPrefix(line, "description :") {
-				val := strings.TrimSpace(line[strings.Index(line, ":")+1:])
-				val = strings.Trim(val, ` "'`)
-
-				// Handle YAML block scalar: description: >  or description: |
-				if val == "" || val == ">" || val == "|" || val == ">-" || val == "|-" || val == ">+" || val == "|+" {
-					var parts []string
-					for scanner.Scan() {
-						cont := scanner.Text()
-						if cont == "" || (cont[0] != ' ' && cont[0] != '\t') {
-							break
-						}
-						parts = append(parts, strings.TrimSpace(cont))
-					}
-					val = strings.Join(parts, " ")
-				}
-
-				if val != "" {
-					return val
-				}
-			}
+func validateGroup(group string) error {
+	if group == "" {
+		return fmt.Errorf("组名不能为空")
+	}
+	if group == "." || group == ".." {
+		return fmt.Errorf("组名不合法: %q", group)
+	}
+	if strings.ContainsAny(group, `/\`) {
+		return fmt.Errorf("组名不能包含路径分隔符")
+	}
+	for _, r := range group {
+		if r < 32 {
+			return fmt.Errorf("组名包含非法字符")
 		}
 	}
-	return ""
+	return nil
 }
 
 // POST /api/import
 func (h *SkillHandler) Import(c echo.Context) error {
 	var req struct {
-		Dir      string   `json:"dir"`
-		SkillIDs []string `json:"skill_ids"`
+		Dir              string   `json:"dir"`
+		Group            string   `json:"group"`
+		SkillIDs         []string `json:"skill_ids"`
+		CreateCollection bool     `json:"create_collection"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 	if req.Dir == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "dir required"})
+	}
+
+	group := strings.TrimSpace(req.Group)
+	if group == "" {
+		group = suggestGroup(req.Dir)
+	}
+	if err := validateGroup(group); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
 	// Handle zip: extract to temp dir
@@ -226,14 +228,13 @@ func (h *SkillHandler) Import(c echo.Context) error {
 		defer cleanup()
 	}
 
-	// Get existing skill IDs
-	existing := map[string]bool{}
-	skills, _, _ := h.DB.ListSkills("", 1, 10000)
-	for _, s := range skills {
-		existing[s.ID] = true
+	// Names already present in this group determine overwrite conflicts.
+	existing, err := h.DB.NamesInGroup(group)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	entries, _, err := scanner.Scan(scanDir, existing, 20)
+	entries, err := scanner.Scan(scanDir, suggestGroup(req.Dir), 20)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
@@ -254,37 +255,43 @@ func (h *SkillHandler) Import(c echo.Context) error {
 	}
 
 	var imported []map[string]string
+	var importedIDs []string
 	var conflicts []map[string]string
 
 	for _, e := range entries {
-		destDir := filepath.Join(h.StoreDir, e.ID)
+		destDir := filepath.Join(h.StoreDir, group, e.Name)
 
-		// Copy to store
+		// Copy to store: $DATA_DIR/<group>/<skill>
 		if err := copyDir(e.SourcePath, destDir); err != nil {
 			continue
 		}
 
-		desc := extractDescription(h.StoreDir, e.ID)
+		id := skillID(group, e.Name)
 		skill := &db.Skill{
-			ID:          e.ID,
+			ID:          id,
+			Name:        e.Name,
+			Group:       group,
 			SourcePath:  e.SourcePath,
 			StorePath:   destDir,
 			SkillType:   "dir",
-			Description: desc,
+			Description: e.Description,
 		}
 		if err := h.DB.UpsertSkill(skill); err != nil {
 			continue
 		}
 
 		imported = append(imported, map[string]string{
-			"id":         e.ID,
+			"id":         id,
+			"name":       e.Name,
+			"group":      group,
 			"source":     e.SourcePath,
 			"store_path": destDir,
 		})
+		importedIDs = append(importedIDs, id)
 
-		if existing[e.ID] {
+		if existing[e.Name] {
 			conflicts = append(conflicts, map[string]string{
-				"name":   e.ID,
+				"name":   e.Name,
 				"action": "overwritten",
 			})
 		}
@@ -297,11 +304,51 @@ func (h *SkillHandler) Import(c echo.Context) error {
 		conflicts = []map[string]string{}
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{
+	// Optionally mirror the import group as a skill collection.
+	var collection map[string]any
+	collectionError := ""
+	if req.CreateCollection && len(importedIDs) > 0 {
+		g, err := h.DB.GetGroupByName(group)
+		if err != nil {
+			collectionError = err.Error()
+		} else {
+			created := false
+			if g == nil {
+				g, err = h.DB.CreateGroup(group, "由导入「"+group+"」时自动创建")
+				if err != nil {
+					collectionError = err.Error()
+				} else {
+					created = true
+				}
+			}
+			if err == nil && g != nil {
+				if _, err := h.DB.AddGroupSkills(g.ID, importedIDs); err != nil {
+					collectionError = err.Error()
+				} else {
+					collection = map[string]any{
+						"id":          g.ID,
+						"name":        g.Name,
+						"created":     created,
+						"skill_count": len(importedIDs),
+					}
+				}
+			}
+		}
+	}
+
+	resp := map[string]any{
+		"group":     group,
 		"imported":  imported,
 		"conflicts": conflicts,
 		"total":     len(imported),
-	})
+	}
+	if collection != nil {
+		resp["collection"] = collection
+	}
+	if collectionError != "" {
+		resp["collection_error"] = collectionError
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 // resolveScanDir returns the directory to scan. If path is a .zip file,

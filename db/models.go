@@ -2,6 +2,8 @@ package db
 
 type Skill struct {
 	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Group       string `json:"group"`
 	SourcePath  string `json:"source_path"`
 	StorePath   string `json:"store_path"`
 	SkillType   string `json:"skill_type"`

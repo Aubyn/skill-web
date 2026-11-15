@@ -77,7 +77,25 @@ func (h *SyncHandler) Sync(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no valid targets"})
 	}
 
-	result, err := syncer.Sync(h.StoreDir, skillIDs, targetPaths)
+	// Resolve skill IDs to library paths. The flat target name is the skill name.
+	refs := make([]syncer.SkillRef, 0, len(skillIDs))
+	for _, sid := range skillIDs {
+		skill, err := h.DB.GetSkill(sid)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		if skill == nil {
+			refs = append(refs, syncer.SkillRef{ID: sid})
+			continue
+		}
+		refs = append(refs, syncer.SkillRef{
+			ID:        skill.ID,
+			Name:      skill.Name,
+			StorePath: skill.StorePath,
+		})
+	}
+
+	result, err := syncer.Sync(refs, targetPaths)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
