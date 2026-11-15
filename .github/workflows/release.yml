@@ -26,7 +26,24 @@ jobs:
             ext: ".exe"
 
     steps:
+      - name: Resolve checkout ref
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          # Manual dispatch: build an existing tag when the input names one;
+          # otherwise build the selected ref and let the release action create the tag.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${INPUT_TAG}" >/dev/null 2>&1; then
+            echo "ref=refs/tags/${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -34,6 +51,8 @@ jobs:
           cache: true
 
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
 
       - uses: actions/setup-node@v4
         with:
