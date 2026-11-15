@@ -24,6 +24,8 @@ func (h *SyncHandler) Sync(c echo.Context) error {
 		SkillIDs  []string `json:"skill_ids"`
 		GroupIDs  []int    `json:"group_ids"`
 		TargetIDs []int    `json:"target_ids"`
+		DryRun    bool     `json:"dry_run"`
+		CopyMode  bool     `json:"copy_mode"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
@@ -95,7 +97,16 @@ func (h *SyncHandler) Sync(c echo.Context) error {
 		})
 	}
 
-	result, err := syncer.Sync(refs, targetPaths)
+	if req.DryRun {
+		return c.JSON(http.StatusOK, syncer.Preview(refs, targetPaths))
+	}
+
+	mode := syncer.ModeLink
+	if req.CopyMode {
+		mode = syncer.ModeCopy
+	}
+
+	result, err := syncer.Sync(refs, targetPaths, mode)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

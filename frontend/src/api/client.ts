@@ -45,6 +45,30 @@ export interface SyncRequest {
   skill_ids?: string[]
   group_ids?: number[]
   target_ids: number[]
+  dry_run?: boolean
+  copy_mode?: boolean
+}
+
+export interface SyncPreviewConflict {
+  name: string
+  winner: string
+  skill_ids: string[]
+}
+
+export interface SyncPreviewTarget {
+  target: string
+  exists: boolean
+  planned: string[]
+  removed_old: string[]
+  failed: string[]
+}
+
+export interface SyncPreviewResult {
+  results: SyncPreviewTarget[]
+  resolved_skills: string[]
+  conflicts: SyncPreviewConflict[]
+  total_planned: number
+  missing_targets: string[]
 }
 
 export interface SyncResult {
@@ -57,6 +81,7 @@ export interface SyncResult {
   resolved_skills: string[]
   backup_path: string
   total_synced: number
+  mode?: string
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -150,5 +175,11 @@ export const api = {
     request<SyncResult>('/api/sync', {
       method: 'POST',
       body: JSON.stringify(req),
+    }),
+
+  syncPreview: (req: SyncRequest) =>
+    request<SyncPreviewResult>('/api/sync', {
+      method: 'POST',
+      body: JSON.stringify({ ...req, dry_run: true }),
     }),
 }
