@@ -101,9 +101,11 @@ flowchart LR
 
 ### 前置条件
 
-- Go >= 1.22
-- Node.js >= 18
-- pnpm
+- Go >= 1.27
+- Node.js >= 26
+- pnpm >= 10
+
+> 项目通过 `mise.toml` 固定工具链版本（Go 1.27.4 / Node 26.13.1 / pnpm 10.34.9），执行 `mise install` 即可安装。
 
 ### 本地开发
 
@@ -127,6 +129,16 @@ go build -o skill-web .
 ```
 
 构建产物为 `skill-web`（Linux amd64），单一二进制无外部依赖。
+
+### mise 任务
+
+```bash
+mise install         # 安装 Go / Node / pnpm
+mise run frontend    # 构建前端
+mise run build       # 构建当前平台二进制
+mise run package     # 打包 linux/amd64 + windows/amd64 到 dist/（含 SHA256SUMS）
+mise run clean       # 清理构建产物
+```
 
 ### 项目结构
 
@@ -159,7 +171,7 @@ skill-web/
 
 | 层 | 选择 |
 |---|---|
-| 后端 | **Go 1.22+** + **Echo v4** |
+| 后端 | **Go 1.27+** + **Echo v4** |
 | 数据库 | **SQLite**（modernc.org/sqlite，零 CGO） |
 | 前端 | **React 19** + **TypeScript** + **Vite** |
 | UI | **Tailwind CSS 3** + 自定义暖色主题 + **Lucide** 图标 |

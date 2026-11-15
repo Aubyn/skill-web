@@ -5,6 +5,9 @@ skill-web.exe
 # Frontend build output
 frontend/dist/
 
+# Release artifacts
+dist/
+
 # Node.js
 frontend/node_modules/
 
