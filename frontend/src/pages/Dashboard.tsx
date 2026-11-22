@@ -2,13 +2,23 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Search, Plus, FolderOpen, Trash2, FileCode, Layers, ChevronRight,
   ChevronDown, Settings2, FolderOpen as FolderIcon, Loader2,
-  ArrowRightToLine, Eye, Check, Copy
+  ArrowRightToLine, Eye, Check, Copy, Link2
 } from 'lucide-react'
-import { api, type Skill, type SkillGroup, type TargetDir, type ScanResult, type SyncPreviewResult } from '../api/client'
+import { api, type Skill, type SkillGroup, type TargetDir, type ScanResult, type SyncPreviewResult, type SyncStrategy } from '../api/client'
 import { ScrollArea } from '../components/ScrollArea'
 import { useToast } from '../components/Toast'
+import { needsConfirmation, strategyHint, strategyLabel, summarizeSync } from '../lib/sync'
 
 type SourceMode = 'skills' | 'groups'
+
+// A frozen sync request plus the strategy chosen by the button the user clicked.
+type PendingSync = {
+  skillIds: string[]
+  groupIds: number[]
+  targetIds: number[]
+  copyMode: boolean
+  strategy: SyncStrategy
+}
 
 // deriveGroup turns a package path into a default group name: waza.zip -> waza.
 function deriveGroup(path: string): string {
@@ -52,8 +62,9 @@ export default function Dashboard() {
   const [syncing, setSyncing] = useState(false)
   const [previewingSync, setPreviewingSync] = useState(false)
   const [copyMode, setCopyMode] = useState(false)
+  const [activeStrategy, setActiveStrategy] = useState<SyncStrategy | null>(null)
   const [syncPreview, setSyncPreview] = useState<SyncPreviewResult | null>(null)
-  const [pendingSync, setPendingSync] = useState<{ skillIds: string[]; groupIds: number[]; targetIds: number[]; copyMode: boolean } | null>(null)
+  const [pendingSync, setPendingSync] = useState<PendingSync | null>(null)
   const { toast } = useToast()
 
   // ── Dialogs ──
@@ -222,26 +233,54 @@ export default function Dashboard() {
   }
 
   // ── Sync ──
-  const runSync = async (skillIds: string[], groupIds: number[], targetIds: number[], copy: boolean) => {
+
+  // After a sync the already-loaded target lists are stale: refresh the ones
+  // the user can see (expanded, or with a visible count badge).
+  const refreshTargetSkills = async (ids: number[]) => {
+    await Promise.all(ids.map(async id => {
+      if (expandedTarget !== id && targetSkills[id] === undefined) return
+      try {
+        const data = await api.getTargetSkills(id)
+        setTargetSkills(prev => ({ ...prev, [id]: data.skills }))
+        setTargetErrors(prev => {
+          const next = { ...prev }
+          if (data.error) next[id] = data.error
+          else delete next[id]
+          return next
+        })
+      } catch { /* 刷新失败不影响同步结果 */ }
+    }))
+  }
+
+  const runSync = async (plan: PendingSync) => {
+    setActiveStrategy(plan.strategy)
     setSyncing(true)
     try {
-      const result = await api.sync({ skill_ids: skillIds, group_ids: groupIds, target_ids: targetIds, copy_mode: copy })
-      const total = result.total_synced
-      const failed = result.results.reduce((n: number, r: any) => n + (r.failed?.length || 0), 0)
-      const details = result.results.map((r: any) => `${r.target}: ${(r.synced||[]).join(', ')}`).join(' | ')
-      toast({
-        type: failed > 0 ? 'error' : 'success',
-        title: failed > 0 ? `同步完成，${failed} 个失败` : `同步成功 — ${total} 个技能`,
-        message: details,
+      const result = await api.sync({
+        skill_ids: plan.skillIds,
+        group_ids: plan.groupIds,
+        target_ids: plan.targetIds,
+        copy_mode: plan.copyMode,
+        strategy: plan.strategy,
       })
+      const summary = summarizeSync(result)
+      toast({
+        type: summary.failed > 0 ? 'error' : 'success',
+        title: summary.failed > 0 ? `同步完成，${summary.failed} 个失败` : `同步成功 — ${summary.total} 个技能`,
+        message: summary.details,
+      })
+      await refreshTargetSkills(plan.targetIds)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '同步失败'
       toast({ type: 'error', title: '同步失败', message: msg })
     }
     setSyncing(false)
+    setActiveStrategy(null)
   }
 
-  const handleSync = async () => {
+  // Both buttons dry-run first; the preview decides whether a confirmation is
+  // needed. Append confirms only on same-name skills, apply on removed content.
+  const startSync = async (strategy: SyncStrategy) => {
     if (syncing || previewingSync) return
     const targetIds = Array.from(selectedTargets)
     if (targetIds.length === 0) return alert('请在右侧勾选目标目录')
@@ -265,31 +304,39 @@ export default function Dashboard() {
       if (!confirm(`以下目标目录不存在，是否自动创建？\n\n${paths}`)) return
     }
 
-    // Dry-run collection syncs first so name conflicts are visible before writing.
-    if (sourceMode === 'groups') {
-      setPreviewingSync(true)
-      try {
-        const preview = await api.syncPreview({ skill_ids: skillIds, group_ids: groupIds, target_ids: targetIds })
-        if (preview.conflicts.length > 0) {
-          setPendingSync({ skillIds, groupIds, targetIds, copyMode })
-          setSyncPreview(preview)
-          return
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : '同步预览失败'
-        toast({ type: 'error', title: '同步预览失败', message: msg })
-        return
-      } finally {
-        setPreviewingSync(false)
-      }
-    }
+    const plan: PendingSync = { skillIds, groupIds, targetIds, copyMode, strategy }
 
-    // Skills source keeps the explicit overwrite confirmation; collection syncs
-    // are direct when the dry-run finds no conflict.
-    if (sourceMode === 'skills') {
-      if (!confirm('同步将覆盖目标目录中的原有内容，确定继续？')) return
+    setPreviewingSync(true)
+    setActiveStrategy(strategy)
+    try {
+      const preview = await api.syncPreview({
+        skill_ids: plan.skillIds,
+        group_ids: plan.groupIds,
+        target_ids: plan.targetIds,
+        copy_mode: plan.copyMode,
+        strategy: plan.strategy,
+      })
+      if (preview.total_planned === 0) {
+        toast({
+          type: 'error',
+          title: '没有可同步的技能',
+          message: '所选技能的来源目录不存在，或全部为同名冲突。',
+        })
+        return
+      }
+      if (needsConfirmation(preview, strategy)) {
+        setSyncPreview(preview)
+        setPendingSync(plan)
+        return
+      }
+      await runSync(plan)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '同步预览失败'
+      toast({ type: 'error', title: '同步预览失败', message: msg })
+    } finally {
+      setPreviewingSync(false)
+      setActiveStrategy(null)
     }
-    await runSync(skillIds, groupIds, targetIds, copyMode)
   }
 
   const confirmPreviewSync = async () => {
@@ -297,12 +344,13 @@ export default function Dashboard() {
     setSyncPreview(null)
     setPendingSync(null)
     if (!pending) return
-    await runSync(pending.skillIds, pending.groupIds, pending.targetIds, pending.copyMode)
+    await runSync(pending)
   }
 
   const cancelPreviewSync = () => {
     setSyncPreview(null)
     setPendingSync(null)
+    setActiveStrategy(null)
   }
 
   // ── Skill Detail ──
@@ -438,6 +486,10 @@ export default function Dashboard() {
 
   // ── Filtered skills ──
   const filteredSkills = query ? skills : skills
+
+  // Both sync buttons share one enabled rule: a source and a target are picked.
+  const syncReady = !syncing && !previewingSync && selectedTargets.size > 0 &&
+    (sourceMode === 'skills' ? selectedSkills.size > 0 : selectedGroups.size > 0)
 
   return (
     <div className="h-full flex flex-col">
@@ -820,48 +872,59 @@ export default function Dashboard() {
           </ScrollArea>
 
           {/* ── Sync Bar ── */}
-          <div className="shrink-0 border-t border-border/40 px-6 py-4 space-y-3 bg-sidebar-bg/40">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-fg-muted">
+          <div className="shrink-0 border-t border-border/40 bg-sidebar-bg/40 px-6 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1 truncate text-xs text-fg-muted">
                 {sourceMode === 'skills' ? (
                   <>已选 <span className="font-medium text-fg-base tabular-nums">{selectedSkills.size}</span> 个技能</>
                 ) : selectedGroups.size > 0 ? (
-                  <>已选集合: <span className="font-medium text-fg-base tabular-nums">{selectedGroups.size}</span> 个</>
+                  <>已选集合 <span className="font-medium text-fg-base tabular-nums">{selectedGroups.size}</span> 个</>
                 ) : (
                   <>未选择来源</>
                 )}
-                → <span className="font-medium text-fg-base tabular-nums">{selectedTargets.size}</span> 个目标
+                <span className="px-1 text-fg-subtle">→</span>
+                <span className="font-medium text-fg-base tabular-nums">{selectedTargets.size}</span> 个目标
               </div>
+
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  className="btn-primary text-sm"
+                  disabled={!syncReady}
+                  onClick={() => startSync('append')}
+                  title="追加：保留目标目录中的其它技能，只覆盖同名技能"
+                >
+                  {activeStrategy === 'append' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} 追加
+                </button>
+
+                <button
+                  className="btn-outline text-sm"
+                  disabled={!syncReady}
+                  onClick={() => startSync('apply')}
+                  title="应用：备份并清空目标目录后全量部署"
+                >
+                  {activeStrategy === 'apply' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRightToLine className="w-4 h-4" />} 应用
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-2 flex items-start gap-2">
               <button
-                className="btn-primary text-sm"
-                disabled={syncing || previewingSync || selectedTargets.size === 0 || (sourceMode === 'skills' ? selectedSkills.size === 0 : selectedGroups.size === 0)}
-                onClick={handleSync}
+                type="button"
+                aria-pressed={copyMode}
+                onClick={() => setCopyMode(v => !v)}
+                title={copyMode ? '复制模式：目标为独立副本，占用额外空间' : '链接模式：与技能库共享内容（默认）'}
+                className={`mt-px inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors
+                  ${copyMode ? 'border-accent/30 bg-accent-bg text-accent-dark' : 'border-border/60 text-fg-muted hover:bg-sidebar-hover hover:text-fg-base'}`}
               >
-                {syncing ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> 同步中…</>
-                ) : previewingSync ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> 检查中…</>
-                ) : (
-                  <><ArrowRightToLine className="w-4 h-4" /> 执行同步</>
-                )}
+                {copyMode ? <Copy className="w-3 h-3" /> : <Link2 className="w-3 h-3" />}
+                {copyMode ? '复制' : '链接'}
               </button>
-            </div>
-            <div className="flex items-center gap-2 cursor-pointer select-none" onClick={() => setCopyMode(v => !v)}>
-              <div className={`w-4 h-4 rounded-[4px] flex items-center justify-center shrink-0 transition-all
-                ${copyMode ? 'bg-accent text-white' : 'border border-border bg-white'}`}>
-                {copyMode && <Check className="w-3 h-3 stroke-[3]" />}
-              </div>
-              <span className="text-xs text-fg-muted">复制模式</span>
-              <span className="text-xs text-fg-subtle">默认链接（ln / junction）</span>
-            </div>
-            <div className="bg-bg-base/60 rounded-lg px-3 py-2">
-              <p className="text-xs text-fg-muted flex items-start gap-1.5">
-                <span className="text-base shrink-0">&#9888;&#65039;</span>
-                <span>同步会覆盖目标目录所有内容，同步前自动备份到 ~/.skill-web/backups/</span>
+              <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-fg-subtle">
+                <span className="text-fg-muted">追加</span> 保留其它技能，只覆盖同名技能；
+                <span className="text-fg-muted">应用</span> 备份并清空目标目录。同步前自动备份到
+                <span className="ml-1 font-mono">~/.skill-web/backups/</span>
               </p>
             </div>
-
-
           </div>
         </div>
       </div>
@@ -984,36 +1047,38 @@ export default function Dashboard() {
       )}
 
       {/* Sync Preview Dialog */}
-      {syncPreview && (
+      {syncPreview && pendingSync && (
         <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-bg-card rounded-xl p-6 w-full max-w-xl mx-4 shadow-dialog border border-border/60">
-            <h2 className="text-base font-semibold mb-1">同步预览</h2>
-            <p className="text-sm text-fg-muted mb-4">
-              检测到 {syncPreview.conflicts.length} 个同名技能冲突。目标目录只能保留一个同名技能，冲突项会被跳过。
-            </p>
+            <h2 className="text-base font-semibold mb-1">确认{strategyLabel(pendingSync.strategy)}同步</h2>
+            <p className="text-sm text-fg-muted mb-4">{strategyHint(pendingSync.strategy)}。</p>
 
-            <div className="mb-4">
-              <p className="text-xs font-medium text-fg-muted mb-1.5">冲突技能</p>
-              <div className="space-y-1 max-h-32 overflow-y-auto">
-                {syncPreview.conflicts.map(c => {
-                  const skipped = c.skill_ids.filter(id => id !== c.winner)
-                  return (
-                    <div key={c.name} className="px-3 py-2 rounded-lg bg-accent-bg/30 border border-accent/20 text-sm">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="font-medium shrink-0">{c.name}</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-base text-fg-muted shrink-0">最终使用</span>
-                        <span className="font-mono text-xs truncate" title={c.winner}>{c.winner}</span>
-                      </div>
-                      {skipped.length > 0 && (
-                        <div className="text-xs text-fg-muted mt-0.5 truncate" title={skipped.join(' / ')}>
-                          跳过：{skipped.join(' / ')}
+            {syncPreview.conflicts.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-medium text-fg-muted mb-1.5">
+                  同名技能冲突 · {syncPreview.conflicts.length} 项（目标目录只能保留一个同名技能，其余会被跳过）
+                </p>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {syncPreview.conflicts.map(c => {
+                    const skipped = c.skill_ids.filter(id => id !== c.winner)
+                    return (
+                      <div key={c.name} className="px-3 py-2 rounded-lg bg-accent-bg/30 border border-accent/20 text-sm">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-medium shrink-0">{c.name}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-base text-fg-muted shrink-0">最终使用</span>
+                          <span className="font-mono text-xs truncate" title={c.winner}>{c.winner}</span>
                         </div>
-                      )}
-                    </div>
-                  )
-                })}
+                        {skipped.length > 0 && (
+                          <div className="text-xs text-fg-muted mt-0.5 truncate" title={skipped.join(' / ')}>
+                            跳过：{skipped.join(' / ')}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="mb-4">
               <p className="text-xs font-medium text-fg-muted mb-1.5">即将同步</p>
@@ -1024,11 +1089,21 @@ export default function Dashboard() {
                       {r.target}{!r.exists && '（不存在，将创建）'}
                     </div>
                     <div className="text-fg-muted">
-                      计划同步 {r.planned.length} 个技能{r.planned.length > 0 ? `：${r.planned.join('、')}` : ''}
+                      部署 {r.planned.length} 个技能{r.planned.length > 0 ? `：${r.planned.join('、')}` : ''}
                     </div>
+                    {r.replaced.length > 0 && (
+                      <div className="text-accent-dark">
+                        覆盖同名技能 {r.replaced.length} 项：{r.replaced.join('、')}
+                      </div>
+                    )}
                     {r.removed_old.length > 0 && (
                       <div className="text-fg-muted">
-                        先备份并移除旧内容 {r.removed_old.length} 项：{r.removed_old.join('、')}
+                        备份并移除旧内容 {r.removed_old.length} 项：{r.removed_old.join('、')}
+                      </div>
+                    )}
+                    {r.kept.length > 0 && (
+                      <div className="text-fg-subtle">
+                        保留其它内容 {r.kept.length} 项：{r.kept.join('、')}
                       </div>
                     )}
                     {r.failed.length > 0 && (
@@ -1041,11 +1116,13 @@ export default function Dashboard() {
 
             <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/60">
               <span className="text-xs text-fg-muted">
-                {pendingSync?.copyMode ? '复制模式' : '链接模式（ln / junction）'} · 合计部署 {syncPreview.total_planned} 项，同步前自动备份
+                {pendingSync.copyMode ? '复制模式' : '链接模式（ln / junction）'} · 合计部署 {syncPreview.total_planned} 项，同步前自动备份
               </span>
               <div className="flex gap-2 shrink-0">
                 <button className="btn-ghost" onClick={cancelPreviewSync}>取消</button>
-                <button className="btn-primary" onClick={confirmPreviewSync}>确认同步</button>
+                <button className="btn-primary" onClick={confirmPreviewSync}>
+                  确认{strategyLabel(pendingSync.strategy)}
+                </button>
               </div>
             </div>
           </div>

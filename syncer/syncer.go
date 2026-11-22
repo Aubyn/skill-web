@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,8 @@ type TargetResult struct {
 	Synced     []string `json:"synced"`
 	Failed     []string `json:"failed"`
 	RemovedOld []string `json:"removed_old"`
+	Replaced   []string `json:"replaced"`
+	Kept       []string `json:"kept"`
 }
 
 type Result struct {
@@ -22,6 +25,7 @@ type Result struct {
 	BackupPath     string         `json:"backup_path"`
 	TotalSynced    int            `json:"total_synced"`
 	Mode           string         `json:"mode"`
+	Strategy       string         `json:"strategy"`
 }
 
 // Mode selects how skills are deployed into target directories.
@@ -33,6 +37,44 @@ const (
 	// ModeCopy copies files so targets are independent of the library.
 	ModeCopy Mode = "copy"
 )
+
+// Strategy selects what happens to content already present in a target dir.
+type Strategy string
+
+const (
+	// StrategyApply backs up and clears the target, then deploys the selection.
+	StrategyApply Strategy = "apply"
+	// StrategyAppend keeps unrelated target content and replaces same-name skills.
+	StrategyAppend Strategy = "append"
+)
+
+// ParseStrategy parses a strategy name, defaulting to apply for empty input.
+// Case and surrounding spaces are ignored.
+func ParseStrategy(raw string) (Strategy, error) {
+	switch Strategy(strings.ToLower(strings.TrimSpace(raw))) {
+	case "", StrategyApply:
+		return StrategyApply, nil
+	case StrategyAppend:
+		return StrategyAppend, nil
+	default:
+		return "", fmt.Errorf("invalid strategy %q (want %q or %q)", raw, StrategyApply, StrategyAppend)
+	}
+}
+
+// Options bundles the deploy knobs so callers do not pass positional flags.
+type Options struct {
+	Mode     Mode
+	Strategy Strategy
+}
+
+// normalized fills in defaults: link mode and apply strategy.
+func (o Options) normalized() Options {
+	strategy := o.Strategy
+	if strategy != StrategyAppend {
+		strategy = StrategyApply
+	}
+	return Options{Mode: normalizeMode(o.Mode), Strategy: strategy}
+}
 
 func normalizeMode(mode Mode) Mode {
 	if mode == ModeCopy {
@@ -60,6 +102,8 @@ type PreviewTarget struct {
 	Exists     bool     `json:"exists"`
 	Planned    []string `json:"planned"`
 	RemovedOld []string `json:"removed_old"`
+	Replaced   []string `json:"replaced"`
+	Kept       []string `json:"kept"`
 	Failed     []string `json:"failed"`
 }
 
@@ -69,15 +113,96 @@ type PreviewResult struct {
 	Conflicts      []PreviewConflict `json:"conflicts"`
 	TotalPlanned   int               `json:"total_planned"`
 	MissingTargets []string          `json:"missing_targets"`
+	Strategy       string            `json:"strategy"`
+}
+
+// deployPlan is the per-target work list. Preview renders it and Sync executes
+// it, so the preview can never drift from what a sync really does.
+type deployPlan struct {
+	Target  string
+	Exists  bool
+	Refs    []SkillRef // skills to deploy, in order, names de-duplicated
+	Names   []string   // deploy names, parallel to Refs
+	Failed  []string
+	Keep    []string // entries left untouched (append only)
+	Replace []string // existing same-name entries that get backed up and replaced
+	Remove  []string // existing entries that get backed up and removed (apply)
+}
+
+// planTarget computes what a sync would do to one target directory without
+// touching the filesystem.
+func planTarget(targetPath string, skills []SkillRef, strategy Strategy) *deployPlan {
+	plan := &deployPlan{
+		Target:  targetPath,
+		Failed:  []string{},
+		Keep:    []string{},
+		Replace: []string{},
+		Remove:  []string{},
+	}
+
+	planned := map[string]bool{}
+	seen := map[string]string{}
+	for _, sk := range skills {
+		name := skillName(sk)
+		if prev, ok := seen[name]; ok {
+			plan.Failed = append(plan.Failed, fmt.Sprintf("%s (name conflict with %s)", name, prev))
+			continue
+		}
+		seen[name] = sk.ID
+
+		if sk.StorePath == "" {
+			plan.Failed = append(plan.Failed, name+" (source not found)")
+			continue
+		}
+		if _, err := os.Stat(sk.StorePath); err != nil {
+			plan.Failed = append(plan.Failed, name+" (source not found)")
+			continue
+		}
+
+		plan.Refs = append(plan.Refs, sk)
+		plan.Names = append(plan.Names, name)
+		planned[name] = true
+	}
+
+	entries, err := os.ReadDir(targetPath)
+	if err != nil {
+		return plan // missing or unreadable target: nothing existing to handle
+	}
+	plan.Exists = true
+
+	for _, e := range entries {
+		if !isDeployableEntry(e) {
+			continue // regular files in the target are never touched
+		}
+		if strategy != StrategyAppend {
+			plan.Remove = append(plan.Remove, e.Name())
+			continue
+		}
+		if planned[e.Name()] {
+			plan.Replace = append(plan.Replace, e.Name())
+			continue
+		}
+		plan.Keep = append(plan.Keep, e.Name())
+	}
+
+	return plan
+}
+
+// isDeployableEntry reports whether a target entry is something a sync owns:
+// directories (skills) and symlinks (legacy skill links).
+func isDeployableEntry(e os.DirEntry) bool {
+	return e.IsDir() || e.Type()&os.ModeSymlink != 0
 }
 
 // Preview computes what Sync would do without touching the filesystem.
-func Preview(skills []SkillRef, targetPaths []string) *PreviewResult {
+func Preview(skills []SkillRef, targetPaths []string, opts Options) *PreviewResult {
+	o := opts.normalized()
 	res := &PreviewResult{
 		Results:        make([]PreviewTarget, 0, len(targetPaths)),
 		ResolvedSkills: make([]string, 0, len(skills)),
 		Conflicts:      []PreviewConflict{},
 		MissingTargets: []string{},
+		Strategy:       string(o.Strategy),
 	}
 
 	// A flat target directory can hold only one skill per name. Detect duplicate
@@ -101,72 +226,43 @@ func Preview(skills []SkillRef, targetPaths []string) *PreviewResult {
 	sort.Slice(res.Conflicts, func(i, j int) bool { return res.Conflicts[i].Name < res.Conflicts[j].Name })
 
 	for _, targetPath := range targetPaths {
-		pt := PreviewTarget{
-			Target:     targetPath,
-			Planned:    []string{},
-			RemovedOld: []string{},
-			Failed:     []string{},
-		}
-
-		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
-			pt.Exists = true
-			entries, _ := os.ReadDir(targetPath)
-			for _, e := range entries {
-				if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
-					pt.RemovedOld = append(pt.RemovedOld, e.Name())
-				}
-			}
-		} else {
+		plan := planTarget(targetPath, skills, o.Strategy)
+		if !plan.Exists {
 			res.MissingTargets = append(res.MissingTargets, targetPath)
 		}
-
-		usedNames := map[string]string{}
-		for _, sk := range skills {
-			name := skillName(sk)
-			if prev, ok := usedNames[name]; ok {
-				// Duplicate name: Sync skips it and reports a failure.
-				pt.Failed = append(pt.Failed, fmt.Sprintf("%s (name conflict with %s)", name, prev))
-				continue
-			}
-			usedNames[name] = sk.ID
-
-			if sk.StorePath == "" {
-				pt.Failed = append(pt.Failed, name+" (source not found)")
-				continue
-			}
-			if _, err := os.Stat(sk.StorePath); err != nil {
-				pt.Failed = append(pt.Failed, name+" (source not found)")
-				continue
-			}
-			pt.Planned = append(pt.Planned, name)
-		}
-
-		res.TotalPlanned += len(pt.Planned)
-		res.Results = append(res.Results, pt)
+		res.TotalPlanned += len(plan.Names)
+		res.Results = append(res.Results, PreviewTarget{
+			Target:     plan.Target,
+			Exists:     plan.Exists,
+			Planned:    plan.Names,
+			RemovedOld: plan.Remove,
+			Replaced:   plan.Replace,
+			Kept:       plan.Keep,
+			Failed:     plan.Failed,
+		})
 	}
 
 	return res
 }
 
-// Sync deploys skills from the library to target dirs.
-// Link mode hard-links on Unix and creates junctions on Windows; copy mode
-// copies files so each target is an independent copy.
-func Sync(skills []SkillRef, targetPaths []string, mode Mode) (*Result, error) {
-	mode = normalizeMode(mode)
+// Sync deploys skills from the library to target dirs following opts.
+// In append mode unrelated target content is kept and only same-name skills are
+// backed up and replaced; in apply mode the whole target is backed up and cleared.
+func Sync(skills []SkillRef, targetPaths []string, opts Options) (*Result, error) {
+	o := opts.normalized()
 	home, _ := os.UserHomeDir()
 	ts := time.Now().Format("2006-01-02T150405")
 	backupDir := filepath.Join(home, ".skill-web", "backups", ts)
 
-	resolved := make([]string, 0, len(skills))
-	for _, sk := range skills {
-		resolved = append(resolved, skillName(sk))
-	}
-
 	res := &Result{
 		Results:        make([]TargetResult, 0, len(targetPaths)),
-		ResolvedSkills: resolved,
+		ResolvedSkills: make([]string, 0, len(skills)),
 		BackupPath:     backupDir,
-		Mode:           string(mode),
+		Mode:           string(o.Mode),
+		Strategy:       string(o.Strategy),
+	}
+	for _, sk := range skills {
+		res.ResolvedSkills = append(res.ResolvedSkills, skillName(sk))
 	}
 
 	var backedUpTargets []string // targets that had content backed up
@@ -177,67 +273,56 @@ func Sync(skills []SkillRef, targetPaths []string, mode Mode) (*Result, error) {
 			Synced:     []string{},
 			Failed:     []string{},
 			RemovedOld: []string{},
+			Replaced:   []string{},
+			Kept:       []string{},
 		}
 
 		// Ensure target dir exists
-		if err := os.MkdirAll(targetPath, 0755); err != nil {
+		if err := os.MkdirAll(targetPath, 0o755); err != nil {
 			tr.Failed = append(tr.Failed, fmt.Sprintf("mkdir target: %v", err))
 			res.Results = append(res.Results, tr)
 			continue
 		}
 
-		// List existing entries in target
-		existing, _ := os.ReadDir(targetPath)
+		plan := planTarget(targetPath, skills, o.Strategy)
+		tr.Kept = append(tr.Kept, plan.Keep...)
+		tr.Replaced = append(tr.Replaced, plan.Replace...)
+		tr.RemovedOld = append(tr.RemovedOld, plan.Remove...)
+		tr.Failed = append(tr.Failed, plan.Failed...)
 
-		// Backup non-empty targets only
-		if len(existing) > 0 {
-			// Lazy-create backup dir (only if there's content to back up)
-			if err := os.MkdirAll(backupDir, 0755); err != nil {
+		// Back up everything that is about to be replaced or removed. A failed
+		// backup keeps the entry in place instead of silently destroying it.
+		blocked := map[string]bool{}
+		toBackup := append(append([]string{}, plan.Remove...), plan.Replace...)
+		if len(toBackup) > 0 {
+			if err := os.MkdirAll(backupDir, 0o755); err != nil {
 				tr.Failed = append(tr.Failed, fmt.Sprintf("create backup dir: %v", err))
 				res.Results = append(res.Results, tr)
 				continue
 			}
-
-			for _, e := range existing {
-				fullPath := filepath.Join(targetPath, e.Name())
-				if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
-					// Backup
-					backupPath := filepath.Join(backupDir, filepath.Base(targetPath), e.Name())
-					os.MkdirAll(filepath.Dir(backupPath), 0755)
-					os.Rename(fullPath, backupPath)
-					tr.RemovedOld = append(tr.RemovedOld, e.Name())
+			for _, name := range toBackup {
+				src := filepath.Join(targetPath, name)
+				dst := filepath.Join(backupDir, filepath.Base(targetPath), name)
+				if err := backupEntry(src, dst); err != nil {
+					blocked[name] = true
+					tr.Failed = append(tr.Failed, fmt.Sprintf("%s (backup failed: %v)", name, err))
 				}
 			}
 			backedUpTargets = append(backedUpTargets, filepath.Base(targetPath))
 		}
 
-		// Create hard links for each skill (file-by-file)
-		usedNames := map[string]string{}
-		for _, sk := range skills {
-			name := skillName(sk)
+		// Deploy each planned skill.
+		for i, sk := range plan.Refs {
+			name := plan.Names[i]
+			if blocked[name] {
+				continue // already reported as failed
+			}
 			dst := filepath.Join(targetPath, name)
-
-			// Target directory names are flat: reject duplicate names across groups.
-			if prev, ok := usedNames[name]; ok {
-				tr.Failed = append(tr.Failed, fmt.Sprintf("%s (name conflict with %s)", name, prev))
-				continue
-			}
-			usedNames[name] = sk.ID
-
-			// Check if source exists
-			if sk.StorePath == "" {
-				tr.Failed = append(tr.Failed, name+" (source not found)")
-				continue
-			}
-			if _, err := os.Stat(sk.StorePath); os.IsNotExist(err) {
-				tr.Failed = append(tr.Failed, name+" (source not found)")
-				continue
-			}
 
 			// Remove existing if any
 			os.RemoveAll(dst)
 
-			if err := linkOrCopy(sk.StorePath, dst, mode); err != nil {
+			if err := linkOrCopy(sk.StorePath, dst, o.Mode); err != nil {
 				tr.Failed = append(tr.Failed, name)
 				continue
 			}
@@ -266,6 +351,50 @@ func skillName(sk SkillRef) string {
 		name = sk.ID
 	}
 	return name
+}
+
+// backupEntry moves src into the backup tree. When a rename is impossible
+// (e.g. the backup tree lives on another filesystem) it falls back to a copy.
+func backupEntry(src, dst string) error {
+	return backupEntryWith(os.Rename, src, dst)
+}
+
+func backupEntryWith(rename func(string, string) error, src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := rename(src, dst); err == nil {
+		return nil
+	}
+
+	fi, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	var copyErr error
+	switch {
+	case fi.Mode()&os.ModeSymlink != 0:
+		copyErr = copySymlink(src, dst)
+	case fi.IsDir():
+		copyErr = copyDir(src, dst)
+	default:
+		return fmt.Errorf("unsupported entry: %s", src)
+	}
+	if copyErr != nil {
+		return copyErr
+	}
+	return os.RemoveAll(src)
+}
+
+// copySymlink re-creates the symlink src at dst.
+func copySymlink(src, dst string) error {
+	target, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+	os.RemoveAll(dst)
+	return os.Symlink(target, dst)
 }
 
 // linkOrCopy deploys one skill directory using the selected mode.

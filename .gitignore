@@ -23,3 +23,6 @@ skill-web.db
 
 # Handoff docs (not part of project source)
 docs/handoff/
+
+# CodeGraph index
+.codegraph/

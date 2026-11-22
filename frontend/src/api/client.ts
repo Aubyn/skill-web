@@ -41,12 +41,16 @@ export interface ImportResult {
   total: number
 }
 
+/** append keeps unrelated target content; apply backs up and clears the target. */
+export type SyncStrategy = 'append' | 'apply'
+
 export interface SyncRequest {
   skill_ids?: string[]
   group_ids?: number[]
   target_ids: number[]
   dry_run?: boolean
   copy_mode?: boolean
+  strategy?: SyncStrategy
 }
 
 export interface SyncPreviewConflict {
@@ -59,7 +63,12 @@ export interface SyncPreviewTarget {
   target: string
   exists: boolean
   planned: string[]
+  /** existing entries that will be backed up and removed (apply) */
   removed_old: string[]
+  /** existing same-name skills that will be backed up and replaced (append) */
+  replaced: string[]
+  /** existing entries left untouched (append) */
+  kept: string[]
   failed: string[]
 }
 
@@ -69,19 +78,25 @@ export interface SyncPreviewResult {
   conflicts: SyncPreviewConflict[]
   total_planned: number
   missing_targets: string[]
+  strategy?: SyncStrategy
+}
+
+export interface SyncResultTarget {
+  target: string
+  synced: string[]
+  failed: string[]
+  removed_old: string[]
+  replaced: string[]
+  kept: string[]
 }
 
 export interface SyncResult {
-  results: Array<{
-    target: string
-    synced: string[]
-    failed: string[]
-    removed_old: string[]
-  }>
+  results: SyncResultTarget[]
   resolved_skills: string[]
   backup_path: string
   total_synced: number
   mode?: string
+  strategy?: SyncStrategy
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {

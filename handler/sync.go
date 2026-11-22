@@ -26,10 +26,17 @@ func (h *SyncHandler) Sync(c echo.Context) error {
 		TargetIDs []int    `json:"target_ids"`
 		DryRun    bool     `json:"dry_run"`
 		CopyMode  bool     `json:"copy_mode"`
+		Strategy  string   `json:"strategy"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
+
+	strategy, err := syncer.ParseStrategy(req.Strategy)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	if len(req.TargetIDs) == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "target_ids required"})
 	}
@@ -97,16 +104,17 @@ func (h *SyncHandler) Sync(c echo.Context) error {
 		})
 	}
 
-	if req.DryRun {
-		return c.JSON(http.StatusOK, syncer.Preview(refs, targetPaths))
-	}
-
 	mode := syncer.ModeLink
 	if req.CopyMode {
 		mode = syncer.ModeCopy
 	}
+	opts := syncer.Options{Mode: mode, Strategy: strategy}
 
-	result, err := syncer.Sync(refs, targetPaths, mode)
+	if req.DryRun {
+		return c.JSON(http.StatusOK, syncer.Preview(refs, targetPaths, opts))
+	}
+
+	result, err := syncer.Sync(refs, targetPaths, opts)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
